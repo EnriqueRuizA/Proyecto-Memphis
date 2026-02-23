@@ -1,0 +1,9 @@
+Reformula este promt de la manera mas rigurosa y detallada posible para que el juego sea completamente jugable y atractivo:
+
+Cosas que no me gustan:
+
+Cosas que me gustaría añadir o cambiar:
+
+
+Estructura el proyecto para que tenga buen rendimiento y sea facil de mantener.
+Luego al final dame un breve texto citando los cambios para el commit.
