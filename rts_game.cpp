@@ -717,30 +717,30 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
 
         DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{50,90,50,100}); ly+=10;
 
-        // Stats sliders
+        // Stats sliders — inline to avoid macro/Color brace-comma issues
         DrawText("STATS",(int)lx,(int)ly,12,{80,180,80,255}); ly+=16;
-        #define SINTI(field,mn,mx,lbl,col) { \
-            int nv=drawIntSlider({lx,ly,sliderW,16},td.field,mn,mx,lbl,mouse,col); \
-            if(nv!=td.field){td.field=nv;changed=true;} ly+=34; }
-        #define SFLOT(field,mn,mx,lbl,fmt,col) { \
-            float nv=drawFloatSlider({lx,ly,sliderW,16},td.field,mn,mx,lbl,fmt,mouse,col); \
-            if(nv!=td.field){td.field=nv;changed=true;} ly+=34; }
-        SINTI(entities,        1,  120, "Entities",              {80,180,80,200});
-        SINTI(hpPerEntity,    10,  300, "HP per Entity",         {60,220,60,200});
-        SINTI(armor,           0,   40, "Armor",                 {160,200,220,200});
-        SINTI(speed,          30,  200, "Speed",                 {60,180,220,200});
-        SINTI(meleeAttack,     1,   80, "Melee Attack",          {220,180,40,200});
-        SINTI(meleeDefense,    0,   60, "Melee Defense",         {180,140,40,200});
-        SINTI(meleeBaseDmg,    1,   80, "Melee Base Dmg",        {220,100,40,200});
-        SINTI(meleeAPDmg,      0,   60, "Melee AP Dmg",          {220,60,40,200});
-        SFLOT(meleeInterval, 0.5f,4.0f,"Melee Interval (s)","%.1fs",{180,80,80,200});
-        SINTI(range,           0,  500, "Range (0=melee only)",  {200,200,80,200});
-        SINTI(missileBaseDmg,  0,   80, "Missile Base Dmg",      {180,80,200,200});
-        SINTI(missileAPDmg,    0,   60, "Missile AP Dmg",        {160,60,200,200});
-        SFLOT(missileReload, 0.5f,8.0f,"Missile Reload (s)","%.1fs",{160,80,180,200});
-        SINTI(cost,           10,  500, "Cost (gold, display)",  {200,200,60,200});
-        #undef SINTI
-        #undef SFLOT
+        auto SI=[&](int& field,int mn,int mx,const char* lbl,Color col){
+            int nv=drawIntSlider({lx,ly,sliderW,16},field,mn,mx,lbl,mouse,col);
+            if(nv!=field){field=nv;changed=true;} ly+=34;
+        };
+        auto SF=[&](float& field,float mn,float mx,const char* lbl,const char* fmt,Color col){
+            float nv=drawFloatSlider({lx,ly,sliderW,16},field,mn,mx,lbl,fmt,mouse,col);
+            if(nv!=field){field=nv;changed=true;} ly+=34;
+        };
+        SI(td.entities,       1,  120,"Entities",             {80,180,80,200});
+        SI(td.hpPerEntity,   10,  300,"HP per Entity",         {60,220,60,200});
+        SI(td.armor,          0,   40,"Armor",                 {160,200,220,200});
+        SI(td.speed,         30,  200,"Speed",                 {60,180,220,200});
+        SI(td.meleeAttack,    1,   80,"Melee Attack",          {220,180,40,200});
+        SI(td.meleeDefense,   0,   60,"Melee Defense",         {180,140,40,200});
+        SI(td.meleeBaseDmg,   1,   80,"Melee Base Dmg",        {220,100,40,200});
+        SI(td.meleeAPDmg,     0,   60,"Melee AP Dmg",          {220,60,40,200});
+        SF(td.meleeInterval,0.5f,4.0f,"Melee Interval (s)","%.1fs",{180,80,80,200});
+        SI(td.range,          0,  500,"Range (0=melee only)",  {200,200,80,200});
+        SI(td.missileBaseDmg, 0,   80,"Missile Base Dmg",      {180,80,200,200});
+        SI(td.missileAPDmg,   0,   60,"Missile AP Dmg",        {160,60,200,200});
+        SF(td.missileReload,0.5f,8.0f,"Missile Reload (s)","%.1fs",{160,80,180,200});
+        SI(td.cost,          10,  500,"Cost (gold, display)",  {200,200,60,200});
 
         // Color
         DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{50,90,50,100}); ly+=8;
@@ -881,21 +881,18 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         cy+=34;
 
         float sw3=250;
-        #define DS_INT(field,mn,mx,lbl,col) { \
-            int nv2=drawIntSlider({cx,cy,sw3,15},(int)g_newDraft.field,mn,mx,lbl,mouse,col); \
-            if(nv2!=(int)g_newDraft.field){g_newDraft.field=nv2;rebuildDraftTex(g_newDraft);} cy+=32; }
-        #define DS_FLT(field,mn,mx,lbl,fmt,col) { \
-            float nv2=drawFloatSlider({cx,cy,sw3,15},g_newDraft.field,mn,mx,lbl,fmt,mouse,col); \
-            g_newDraft.field=nv2; cy+=32; }
-        DS_INT(entities,       1, 120,"Entities",         {80,180,80,200});
-        DS_INT(hpPerEntity,   10, 300,"HP/Entity",        {60,220,60,200});
-        DS_INT(armor,          0,  40,"Armor",            {160,200,220,200});
-        DS_INT(speed,         30, 200,"Speed",            {60,180,220,200});
-        DS_INT(meleeBaseDmg,   1,  80,"Melee Base Dmg",   {220,100,40,200});
-        DS_INT(range,          0, 500,"Range (0=melee)",  {200,200,80,200});
-        DS_INT(cost,          10, 500,"Gold cost",        {200,200,60,200});
-        #undef DS_INT
-        #undef DS_FLT
+        // Use lambdas to avoid macro/Color brace-comma issues
+        auto DSI=[&](int& field,int mn,int mx,const char* lbl,Color col){
+            int nv2=drawIntSlider({cx,cy,sw3,15},field,mn,mx,lbl,mouse,col);
+            if(nv2!=field){field=nv2;rebuildDraftTex(g_newDraft);} cy+=32;
+        };
+        DSI(g_newDraft.entities,      1, 120,"Entities",         {80,180,80,200});
+        DSI(g_newDraft.hpPerEntity,  10, 300,"HP/Entity",        {60,220,60,200});
+        DSI(g_newDraft.armor,         0,  40,"Armor",            {160,200,220,200});
+        DSI(g_newDraft.speed,        30, 200,"Speed",            {60,180,220,200});
+        DSI(g_newDraft.meleeBaseDmg,  1,  80,"Melee Base Dmg",   {220,100,40,200});
+        DSI(g_newDraft.range,         0, 500,"Range (0=melee)",  {200,200,80,200});
+        DSI(g_newDraft.cost,         10, 500,"Gold cost",        {200,200,60,200});
 
         // Color sliders
         int nr2=drawIntSlider({cx+16,cy,sw3,14},(int)g_newDraft.r,0,255,"R",mouse,{220,60,60,200});
@@ -1082,9 +1079,9 @@ GameState updateDrawGame(std::vector<BUnit>& playerUnits,
         const char* pm="PAUSED";
         int ptw=MeasureText(pm,56);
         DrawText(pm,SCREEN_W/2-ptw/2,SCREEN_H/2-80,56,YELLOW);
-        if(drawButton({(float)(SCREEN_W/2-120),SCREEN_H/2+10,240,50},"RESUME",mouse,{30,70,30,255},{60,130,60,255}))
+        if(drawButton({(float)(SCREEN_W/2-120),(float)(SCREEN_H/2+10),240,50},"RESUME",mouse,{30,70,30,255},{60,130,60,255}))
             g_paused=false;
-        if(drawButton({(float)(SCREEN_W/2-120),SCREEN_H/2+70,240,50},"RETURN TO MENU",mouse,{60,30,30,255},{100,50,50,255})){
+        if(drawButton({(float)(SCREEN_W/2-120),(float)(SCREEN_H/2+70),240,50},"RETURN TO MENU",mouse,{60,30,30,255},{100,50,50,255})){
             g_paused=false; return STATE_MENU;
         }
         return STATE_PLAYING;
