@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <ctime>
 
 // ═══════════════════════════════════════════════════════════════
 //  SCREEN
@@ -1366,7 +1367,7 @@ GameState updateDrawGame(const BattleConfig& cfg, Vector2 mouse, float dt){
     srand(42);
     for(int i=0;i<60;i++){
         int gx=rand()%SCREEN_W, gy=rand()%SCREEN_H;
-        DrawRectangle(gx,gy,4+rand()%8,2+rand()%4,{28+rand()%14,48+rand()%14,18+rand()%8,180});
+        DrawRectangle(gx,gy,4+rand()%8,2+rand()%4,{(unsigned char)(28+rand()%14),(unsigned char)(48+rand()%14),(unsigned char)(18+rand()%8),180});
     }
     srand((unsigned)time(nullptr)); // reset random
 
