@@ -4,61 +4,164 @@
 #include <string>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 // ═══════════════════════════════════════════════════════════════
-//  PANTALLA (dinámica para fullscreen)
+//  SCREEN
 // ═══════════════════════════════════════════════════════════════
 int SCREEN_W = 1280;
 int SCREEN_H = 768;
-const int SPR_SIZE = 16;
 
 // ═══════════════════════════════════════════════════════════════
-//  SPRITES PIXEL ART (forward declarations de funciones de textura)
+//  UTILS
 // ═══════════════════════════════════════════════════════════════
 unsigned char clampU8(int v){ return (unsigned char)std::max(0,std::min(255,v)); }
+float vdist(Vector2 a,Vector2 b){float dx=a.x-b.x,dy=a.y-b.y;return sqrtf(dx*dx+dy*dy);}
+Vector2 vnorm(Vector2 v){float l=sqrtf(v.x*v.x+v.y*v.y);if(l<0.001f)return{0,-1};return{v.x/l,v.y/l};}
+float dirToAngle(Vector2 d){return atan2f(d.x,-d.y)*RAD2DEG;}
+float lerpAngle(float c,float t,float s){
+    float d=t-c; while(d>180)d-=360; while(d<-180)d+=360; return c+d*s;
+}
+float lerp(float a,float b,float t){return a+(b-a)*t;}
+bool btnHover(Rectangle r,Vector2 m){return CheckCollisionPointRec(m,r);}
+int randRange(int lo,int hi){return lo+(rand()%(hi-lo+1));}
+float frandRange(float lo,float hi){return lo+(float)rand()/(float)RAND_MAX*(hi-lo);}
 
 static void px(Image& img,int x,int y,Color c){
     if(x<0||y<0||x>=img.width||y>=img.height) return;
     ImageDrawPixel(&img,x,y,c);
 }
+static void pxRect(Image& img,int x,int y,int w,int h,Color c){
+    for(int dy=0;dy<h;dy++) for(int dx=0;dx<w;dx++) px(img,x+dx,y+dy,c);
+}
 
-Image makeTankImg(unsigned char r,unsigned char g,unsigned char b){
-    Image img=GenImageColor(SPR_SIZE,SPR_SIZE,BLANK);
-    Color body={r,g,b,255},dark={clampU8(r/2),clampU8(g/2),clampU8(b/2),255};
-    Color hi={clampU8(r+80),clampU8(g+80),clampU8(b+80),255};
-    Color bar={200,200,210,255},trk={20,20,20,255};
-    for(int y2=4;y2<=13;y2++){px(img,1,y2,trk);px(img,2,y2,trk);px(img,13,y2,trk);px(img,14,y2,trk);}
-    for(int y2=5;y2<=12;y2++) for(int x2=3;x2<=12;x2++) px(img,x2,y2,body);
-    for(int y2=6;y2<=11;y2++) for(int x2=5;x2<=10;x2++) px(img,x2,y2,dark);
-    px(img,5,6,hi);px(img,6,6,hi);px(img,5,7,hi);
-    for(int y2=0;y2<=5;y2++){px(img,7,y2,bar);px(img,8,y2,bar);}
+// ═══════════════════════════════════════════════════════════════
+//  UNIT TYPE ENUM
+// ═══════════════════════════════════════════════════════════════
+enum UnitRole { ROLE_LIGHT_INF=0, ROLE_HEAVY_INF, ROLE_RANGED, ROLE_LIGHT_CAV, ROLE_HEAVY_CAV, ROLE_COUNT };
+const char* roleNames[ROLE_COUNT]={"Light Infantry","Heavy Infantry","Ranged Infantry","Light Cavalry","Heavy Cavalry"};
+
+// ═══════════════════════════════════════════════════════════════
+//  SPRITE GENERATION  (16x16 top-down pixel art)
+// ═══════════════════════════════════════════════════════════════
+// Colors
+static Color C_SKIN  = {220,170,120,255};
+static Color C_DARK  = {40,30,20,255};
+static Color C_BLOND = {210,180,80,255};
+static Color C_CLOTH = {180,160,120,255};
+static Color C_PADDED= {150,130,90,255};
+static Color C_CHAIN = {140,140,150,255};
+static Color C_PLATE = {200,200,210,255};
+static Color C_BRIGANDINE = {120,100,70,255};
+static Color C_SHIELD_WOOD= {140,90,50,255};
+static Color C_SHIELD_METAL={160,160,170,255};
+static Color C_WEAPON_METAL={200,200,215,255};
+static Color C_HORSE_BROWN ={120,75,40,255};
+static Color C_HORSE_BLACK ={50,40,35,255};
+static Color C_BLOOD  = {180,20,20,200};
+
+// Draw a top-down soldier figure in a 16x16 image
+// armorCol = body color, helmCol = helmet, weaponCol = weapon color
+// hasShield, hasPolearm, hasRanged, hasCav
+Image makeUnitSprite(Color armorCol, Color helmCol, Color weaponCol,
+                     bool hasShield, bool isPolearm, bool isCav,
+                     Color horseCol={120,75,40,255})
+{
+    Image img = GenImageColor(16,16,BLANK);
+
+    if(isCav){
+        // Horse body (oval, top-down)
+        Color hc = horseCol;
+        Color hd = {clampU8(hc.r-40),clampU8(hc.g-30),clampU8(hc.b-20),255};
+        for(int y=5;y<=12;y++) for(int x=3;x<=13;x++){
+            float nx=(x-8)/5.0f, ny=(y-8.5f)/3.5f;
+            if(nx*nx+ny*ny<=1.0f) px(img,x,y,hc);
+        }
+        // Horse legs (4 dots at corners)
+        px(img,4,12,hd); px(img,5,13,hd);
+        px(img,11,12,hd); px(img,10,13,hd);
+        px(img,4,6,hd); px(img,5,5,hd);
+        px(img,11,6,hd); px(img,10,5,hd);
+        // Rider torso (center top)
+        pxRect(img,6,4,4,5,armorCol);
+        px(img,7,4,helmCol); px(img,8,4,helmCol);
+        px(img,7,3,helmCol); px(img,8,3,helmCol);
+        // Rider head
+        px(img,7,2,C_SKIN); px(img,8,2,C_SKIN);
+        // Weapon
+        if(isPolearm){
+            for(int yy=0;yy<=5;yy++) px(img,10,yy,weaponCol);
+            px(img,10,0,{220,180,60,255});
+        } else {
+            px(img,10,3,weaponCol); px(img,10,2,weaponCol); px(img,11,2,weaponCol);
+        }
+        if(hasShield){
+            pxRect(img,5,3,3,4,C_SHIELD_METAL);
+            px(img,5,3,{200,200,200,255});
+        }
+    } else {
+        // Top-down infantry
+        // Body/torso center
+        pxRect(img,5,5,6,7,armorCol);
+        // Shoulder pads
+        px(img,4,5,armorCol); px(img,11,5,armorCol);
+        px(img,4,6,armorCol); px(img,11,6,armorCol);
+        // Helm / head
+        pxRect(img,6,2,4,3,helmCol);
+        px(img,6,3,{clampU8(helmCol.r-30),clampU8(helmCol.g-30),clampU8(helmCol.b-30),255});
+        px(img,9,3,{clampU8(helmCol.r-30),clampU8(helmCol.g-30),clampU8(helmCol.b-30),255});
+        // Face/visor slot
+        px(img,7,2,C_SKIN); px(img,8,2,C_SKIN);
+        // Legs
+        px(img,6,12,armorCol); px(img,7,12,armorCol);
+        px(img,8,12,armorCol); px(img,9,12,armorCol);
+        px(img,6,13,C_DARK);  px(img,9,13,C_DARK);
+        // Weapon
+        if(isPolearm){
+            // Polearm on right side
+            for(int yy=0;yy<=13;yy++) px(img,12,yy,weaponCol);
+            px(img,12,0,{220,180,60,255}); px(img,11,0,{220,180,60,255});
+        } else {
+            // Sword/axe
+            px(img,11,4,weaponCol); px(img,12,3,weaponCol);
+            px(img,11,3,weaponCol); px(img,12,4,weaponCol);
+            px(img,10,5,weaponCol);
+        }
+        // Shield
+        if(hasShield){
+            pxRect(img,2,5,4,5,C_SHIELD_WOOD);
+            px(img,3,6,{clampU8(C_SHIELD_WOOD.r+30),clampU8(C_SHIELD_WOOD.g+20),clampU8(C_SHIELD_WOOD.b+10),255});
+        }
+    }
     return img;
 }
-Image makeSoldierImg(unsigned char r,unsigned char g,unsigned char b){
-    Image img=GenImageColor(SPR_SIZE,SPR_SIZE,BLANK);
-    Color body={r,g,b,255},dark={clampU8(r/2),clampU8(g/2),clampU8(b/2),255};
-    Color hi={clampU8(r+80),clampU8(g+80),clampU8(b+80),255};
-    Color skin={220,170,120,255},blt={40,40,40,255};
-    for(int y2=11;y2<=15;y2++){px(img,5,y2,dark);px(img,6,y2,dark);px(img,9,y2,dark);px(img,10,y2,dark);}
-    for(int y2=6;y2<=11;y2++) for(int x2=5;x2<=10;x2++) px(img,x2,y2,body);
-    px(img,5,6,hi);px(img,6,6,hi);
-    for(int y2=2;y2<=5;y2++) for(int x2=6;x2<=9;x2++) px(img,x2,y2,skin);
-    for(int x2=5;x2<=10;x2++) px(img,x2,2,dark);
-    px(img,5,3,dark);px(img,10,3,dark);
-    px(img,8,0,blt);px(img,8,1,blt);px(img,8,2,blt);px(img,9,2,blt);
-    return img;
-}
-Image makeSniperImg(unsigned char r,unsigned char g,unsigned char b){
-    Image img=GenImageColor(SPR_SIZE,SPR_SIZE,BLANK);
-    Color body={r,g,b,255},dark={clampU8(r/2),clampU8(g/2),clampU8(b/2),255};
-    Color hi={clampU8(r+80),clampU8(g+80),clampU8(b+80),255};
-    Color bar={210,210,180,255},scp={80,80,50,255};
-    for(int y2=7;y2<=13;y2++) for(int x2=5;x2<=10;x2++) px(img,x2,y2,body);
-    for(int y2=5;y2<=8;y2++)  for(int x2=6;x2<=9;x2++)  px(img,x2,y2,dark);
-    px(img,6,5,hi);
-    for(int y2=0;y2<=5;y2++){px(img,7,y2,bar);px(img,8,y2,bar);}
-    px(img,6,2,scp);px(img,7,2,scp);px(img,8,2,scp);px(img,9,2,scp);
-    px(img,6,13,dark);px(img,7,14,dark);px(img,8,14,dark);px(img,9,13,dark);
+
+Image makeRangedSprite(Color armorCol, Color helmCol, bool isCrossbow){
+    Image img = GenImageColor(16,16,BLANK);
+    // Body
+    pxRect(img,5,5,6,7,armorCol);
+    px(img,4,5,armorCol); px(img,11,5,armorCol);
+    // Head
+    pxRect(img,6,2,4,3,helmCol);
+    px(img,7,2,C_SKIN); px(img,8,2,C_SKIN);
+    // Legs
+    px(img,6,12,armorCol); px(img,7,12,armorCol);
+    px(img,8,12,armorCol); px(img,9,12,armorCol);
+    px(img,6,13,C_DARK); px(img,9,13,C_DARK);
+    if(isCrossbow){
+        // Crossbow horizontal
+        for(int xx=2;xx<=13;xx++) px(img,xx,7,{100,70,40,255});
+        px(img,7,6,{200,200,210,255}); px(img,8,6,{200,200,210,255});
+        px(img,7,8,{200,200,210,255}); px(img,8,8,{200,200,210,255});
+    } else {
+        // Bow (arc on left)
+        for(int yy=2;yy<=12;yy++) px(img,3,yy,{100,70,40,255});
+        px(img,4,2,{100,70,40,255}); px(img,4,12,{100,70,40,255});
+        // Arrow
+        px(img,5,7,{180,150,60,255}); px(img,6,7,{180,150,60,255});
+        px(img,7,7,{200,200,210,255});
+    }
     return img;
 }
 
@@ -70,79 +173,195 @@ Texture2D imgToTex(Image img){
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  TIPOS DE UNIDAD — sistema dinámico
+//  UNIT TYPE DEFINITION
 // ═══════════════════════════════════════════════════════════════
-enum SpriteBase { SPR_TANK=0, SPR_SOLDIER, SPR_SNIPER, SPR_BASE_COUNT };
-const char* spriteBaseNames[SPR_BASE_COUNT] = { "Tanque", "Soldado", "Francotirador" };
-
 struct UnitTypeDef {
-    char  name[32];
-    float speed, hp, damage, attackRange, attackCooldown;
-    unsigned char r, g, b;
-    SpriteBase spriteBase;
+    char  name[48];
+    UnitRole role;
+    int   numEntities;
+    int   cost;
+    float healthPerEntity;
+    float armour;            // 0-100
+    float speed;
+    int   meleeAttack;
+    float meleeAttackInterval;
+    int   meleeDefense;
+    float meleeBaseDmg;
+    float meleeAPDmg;
+    float range;             // 0 = no ranged
+    float missileBaseDmg;
+    float missileAPDmg;
+    float missileReloadTime;
     bool  isBuiltin;
+    // Sprite colors (for display/editor)
+    unsigned char r,g,b;
+    unsigned char hr,hg,hb; // helmet color
+    bool hasShield, isPolearm, isCav, isCrossbow;
+    Color horseCol;
 };
 
 static std::vector<UnitTypeDef> g_unitTypes;
-static std::vector<Texture2D>   g_playerTextures;  // una textura por tipo
-static std::vector<Texture2D>   g_enemyTextures;   // versión rojiza por tipo
+static std::vector<Texture2D>   g_playerTex;
+static std::vector<Texture2D>   g_enemyTex;
 
 void rebuildTexture(int idx){
-    const UnitTypeDef& td=g_unitTypes[idx];
-    // Player tex
-    if(idx<(int)g_playerTextures.size()) UnloadTexture(g_playerTextures[idx]);
+    const UnitTypeDef& td = g_unitTypes[idx];
+    Color ac={td.r,td.g,td.b,255};
+    Color hc={td.hr,td.hg,td.hb,255};
+    Color wc=C_WEAPON_METAL;
+
     Image img;
-    switch(td.spriteBase){
-        case SPR_SOLDIER: img=makeSoldierImg(td.r,td.g,td.b); break;
-        case SPR_SNIPER:  img=makeSniperImg(td.r,td.g,td.b); break;
-        default:          img=makeTankImg(td.r,td.g,td.b); break;
-    }
-    if(idx<(int)g_playerTextures.size()) g_playerTextures[idx]=imgToTex(img);
-    else g_playerTextures.push_back(imgToTex(img));
-    // Enemy tex (rojiza)
-    unsigned char er=clampU8((int)(td.r*0.5f+180*0.5f));
+    if(td.range>0 && td.role==ROLE_RANGED)
+        img=makeRangedSprite(ac,hc,td.isCrossbow);
+    else
+        img=makeUnitSprite(ac,hc,wc,td.hasShield,td.isPolearm,td.isCav,td.horseCol);
+
+    if(idx<(int)g_playerTex.size()) UnloadTexture(g_playerTex[idx]);
+    if(idx<(int)g_playerTex.size()) g_playerTex[idx]=imgToTex(img);
+    else g_playerTex.push_back(imgToTex(img));
+
+    // Enemy = reddened
+    unsigned char er=clampU8((int)(td.r*0.4f+160*0.6f));
     unsigned char eg=clampU8((int)(td.g*0.3f));
     unsigned char eb=clampU8((int)(td.b*0.3f));
+    Color eac={er,eg,eb,255};
+    Color ehc={clampU8(td.hr/2+80),clampU8(td.hg/3),clampU8(td.hb/3),255};
+
     Image eimg;
-    switch(td.spriteBase){
-        case SPR_SOLDIER: eimg=makeSoldierImg(er,eg,eb); break;
-        case SPR_SNIPER:  eimg=makeSniperImg(er,eg,eb); break;
-        default:          eimg=makeTankImg(er,eg,eb); break;
-    }
-    if(idx<(int)g_enemyTextures.size()) g_enemyTextures[idx]=imgToTex(eimg);
-    else g_enemyTextures.push_back(imgToTex(eimg));
+    if(td.range>0 && td.role==ROLE_RANGED)
+        eimg=makeRangedSprite(eac,ehc,td.isCrossbow);
+    else
+        eimg=makeUnitSprite(eac,ehc,wc,td.hasShield,td.isPolearm,td.isCav,td.horseCol);
+
+    if(idx<(int)g_enemyTex.size()) UnloadTexture(g_enemyTex[idx]);
+    if(idx<(int)g_enemyTex.size()) g_enemyTex[idx]=imgToTex(eimg);
+    else g_enemyTex.push_back(imgToTex(eimg));
 }
 
 void initBuiltinTypes(){
     g_unitTypes.clear();
-    UnitTypeDef t;
-    strcpy(t.name,"Tanque");
-    t.speed=100; t.hp=200; t.damage=30; t.attackRange=90; t.attackCooldown=1.2f;
-    t.r=60; t.g=120; t.b=220; t.spriteBase=SPR_TANK; t.isBuiltin=true;
+
+    // 0: Spear Levy
+    UnitTypeDef t={};
+    strcpy(t.name,"Spear Levy");
+    t.role=ROLE_LIGHT_INF; t.numEntities=60; t.cost=100;
+    t.healthPerEntity=30; t.armour=0; t.speed=80;
+    t.meleeAttack=10; t.meleeAttackInterval=1.5f; t.meleeDefense=5;
+    t.meleeBaseDmg=8; t.meleeAPDmg=2;
+    t.range=0; t.isBuiltin=true;
+    t.r=180; t.g=160; t.b=120;    // cloth
+    t.hr=180; t.hg=160; t.hb=120; // no helm
+    t.hasShield=false; t.isPolearm=true; t.isCav=false;
     g_unitTypes.push_back(t);
-    strcpy(t.name,"Soldado");
-    t.speed=180; t.hp=80; t.damage=18; t.attackRange=70; t.attackCooldown=0.6f;
-    t.r=60; t.g=180; t.b=60; t.spriteBase=SPR_SOLDIER; t.isBuiltin=true;
+
+    // 1: Axe Militia
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Axe Militia");
+    t.role=ROLE_LIGHT_INF; t.numEntities=50; t.cost=150;
+    t.healthPerEntity=40; t.armour=10; t.speed=90;
+    t.meleeAttack=18; t.meleeAttackInterval=1.2f; t.meleeDefense=12;
+    t.meleeBaseDmg=14; t.meleeAPDmg=4;
+    t.range=0; t.isBuiltin=true;
+    t.r=150; t.g=130; t.b=90;    // padded
+    t.hr=80; t.hg=70; t.hb=60;  // simple cap
+    t.hasShield=true; t.isPolearm=false; t.isCav=false;
     g_unitTypes.push_back(t);
-    strcpy(t.name,"Francotirador");
-    t.speed=60; t.hp=100; t.damage=80; t.attackRange=220; t.attackCooldown=2.5f;
-    t.r=180; t.g=140; t.b=50; t.spriteBase=SPR_SNIPER; t.isBuiltin=true;
+
+    // 2: Poleaxe Retainers
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Poleaxe Retainers");
+    t.role=ROLE_HEAVY_INF; t.numEntities=40; t.cost=300;
+    t.healthPerEntity=60; t.armour=30; t.speed=70;
+    t.meleeAttack=28; t.meleeAttackInterval=1.4f; t.meleeDefense=20;
+    t.meleeBaseDmg=18; t.meleeAPDmg=10;
+    t.range=0; t.isBuiltin=true;
+    t.r=140; t.g=140; t.b=150;  // chainmail
+    t.hr=120; t.hg=120; t.hb=130;
+    t.hasShield=false; t.isPolearm=true; t.isCav=false;
     g_unitTypes.push_back(t);
-    // Build textures for all
-    g_playerTextures.clear();
-    g_enemyTextures.clear();
+
+    // 3: Dismounted Knights
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Dismounted Knights");
+    t.role=ROLE_HEAVY_INF; t.numEntities=24; t.cost=500;
+    t.healthPerEntity=80; t.armour=60; t.speed=55;
+    t.meleeAttack=38; t.meleeAttackInterval=1.6f; t.meleeDefense=30;
+    t.meleeBaseDmg=20; t.meleeAPDmg=18;
+    t.range=0; t.isBuiltin=true;
+    t.r=200; t.g=200; t.b=210;  // full plate
+    t.hr=210; t.hg=210; t.hb=220;
+    t.hasShield=false; t.isPolearm=false; t.isCav=false;
+    g_unitTypes.push_back(t);
+
+    // 4: Bow Levy
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Bow Levy");
+    t.role=ROLE_RANGED; t.numEntities=50; t.cost=120;
+    t.healthPerEntity=25; t.armour=0; t.speed=85;
+    t.meleeAttack=8; t.meleeAttackInterval=1.5f; t.meleeDefense=4;
+    t.meleeBaseDmg=6; t.meleeAPDmg=1;
+    t.range=200; t.missileBaseDmg=10; t.missileAPDmg=2; t.missileReloadTime=2.0f;
+    t.isBuiltin=true;
+    t.r=180; t.g=155; t.b=110;
+    t.hr=160; t.hg=140; t.hb=100;
+    t.hasShield=false; t.isPolearm=false; t.isCav=false; t.isCrossbow=false;
+    g_unitTypes.push_back(t);
+
+    // 5: Crossbow Retainers
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Crossbow Retainers");
+    t.role=ROLE_RANGED; t.numEntities=36; t.cost=280;
+    t.healthPerEntity=45; t.armour=20; t.speed=65;
+    t.meleeAttack=15; t.meleeAttackInterval=1.3f; t.meleeDefense=14;
+    t.meleeBaseDmg=10; t.meleeAPDmg=5;
+    t.range=180; t.missileBaseDmg=14; t.missileAPDmg=8; t.missileReloadTime=3.5f;
+    t.isBuiltin=true;
+    t.r=120; t.g=100; t.b=70;  // brigandine
+    t.hr=100; t.hg=90; t.hb=75;
+    t.hasShield=false; t.isPolearm=false; t.isCav=false; t.isCrossbow=true;
+    g_unitTypes.push_back(t);
+
+    // 6: Mounted Sergeants
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Mounted Sergeants");
+    t.role=ROLE_LIGHT_CAV; t.numEntities=30; t.cost=350;
+    t.healthPerEntity=50; t.armour=20; t.speed=160;
+    t.meleeAttack=25; t.meleeAttackInterval=1.1f; t.meleeDefense=18;
+    t.meleeBaseDmg=16; t.meleeAPDmg=6;
+    t.range=0; t.isBuiltin=true;
+    t.r=120; t.g=100; t.b=70;
+    t.hr=100; t.hg=90; t.hb=75;
+    t.hasShield=true; t.isPolearm=true; t.isCav=true;
+    t.horseCol={140,90,55,255};
+    g_unitTypes.push_back(t);
+
+    // 7: Knights (Poleaxes)
+    memset(&t,0,sizeof(t));
+    strcpy(t.name,"Knights");
+    t.role=ROLE_HEAVY_CAV; t.numEntities=16; t.cost=700;
+    t.healthPerEntity=100; t.armour=70; t.speed=200;
+    t.meleeAttack=42; t.meleeAttackInterval=1.5f; t.meleeDefense=28;
+    t.meleeBaseDmg=22; t.meleeAPDmg=20;
+    t.range=0; t.isBuiltin=true;
+    t.r=210; t.g=210; t.b=220;
+    t.hr=215; t.hg=215; t.hb=225;
+    t.hasShield=false; t.isPolearm=true; t.isCav=true;
+    t.horseCol={60,50,45,255};
+    g_unitTypes.push_back(t);
+
+    g_playerTex.clear(); g_enemyTex.clear();
     for(int i=0;i<(int)g_unitTypes.size();i++) rebuildTexture(i);
 }
 
 int unitTypeCount(){ return (int)g_unitTypes.size(); }
 
 // ═══════════════════════════════════════════════════════════════
-//  ESTADOS
+//  STATES
 // ═══════════════════════════════════════════════════════════════
 enum GameState { STATE_MENU, STATE_CUSTOM_BATTLE, STATE_UNIT_EDITOR, STATE_PLAYING };
 
 // ═══════════════════════════════════════════════════════════════
-//  CONFIGURACIÓN DE BATALLA
+//  BATTLE CONFIG
 // ═══════════════════════════════════════════════════════════════
 struct BattleConfig {
     std::vector<int> playerCounts;
@@ -155,8 +374,7 @@ BattleConfig defaultBattleConfig(){
     int n=unitTypeCount();
     c.playerCounts.assign(n,0);
     c.enemyCounts.assign(n,0);
-    if(n>0) c.playerCounts[0]=9;
-    if(n>0) c.enemyCounts[0]=6;
+    if(n>0){ c.playerCounts[0]=1; c.enemyCounts[0]=1; }
     c.difficulty=1.0f;
     return c;
 }
@@ -168,73 +386,66 @@ void resizeBattleConfig(BattleConfig& c){
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ESTRUCTURAS EN PARTIDA
+//  GAME ENTITIES
 // ═══════════════════════════════════════════════════════════════
-struct Unit {
-    Vector2  pos, target;
-    float    hp, maxHp, speed, damage, attackRange, attackCooldown;
-    bool     selected, moving, alive;
-    float    angle, angleTarget, attackTimer;
-    Color    bodyColor;
-    int      typeIdx;
+struct Entity {
+    Vector2 pos;
+    float   hp;
+    bool    alive;
 };
 
-struct Enemy {
-    Vector2  pos;
-    float    hp, maxHp, speed, attackTimer, angle;
-    bool     alive;
-    int      typeIdx;
+struct BattleUnit {
+    int     typeIdx;
+    bool    isPlayer;
+    bool    selected;
+
+    Vector2 pos;        // center of the unit formation
+    Vector2 target;     // movement target
+    float   angle;      // facing angle in degrees
+    float   angleTarget;
+
+    std::vector<Entity> entities; // individual soldiers
+    float   missileReloadTimer;
+    float   meleeAttackTimer;
+
+    // State
+    bool    moving;
+    bool    inMeleeWith;   // dummy flag
+    int     targetUnitIdx; // index into battle units array (-1 = none)
+    bool    forceAttack;   // right-clicked on enemy
 };
 
-struct Bullet {
+struct Projectile {
     Vector2 pos, vel;
-    float   damage;
+    float   damage, apDamage;
     bool    alive, fromPlayer;
+    int     targetUnitIdx;
 };
-
-// ═══════════════════════════════════════════════════════════════
-//  MATH / UTILS
-// ═══════════════════════════════════════════════════════════════
-float vdist(Vector2 a,Vector2 b){float dx=a.x-b.x,dy=a.y-b.y;return sqrtf(dx*dx+dy*dy);}
-Vector2 vnorm(Vector2 v){float l=sqrtf(v.x*v.x+v.y*v.y);if(l==0)return{0,0};return{v.x/l,v.y/l};}
-float dirToAngle(Vector2 d){return atan2f(-d.y,d.x)*RAD2DEG;}
-float lerpAngle(float c,float t,float s){float d=t-c;while(d>180)d-=360;while(d<-180)d+=360;return c+d*s;}
-bool  btnHover(Rectangle r,Vector2 m){return CheckCollisionPointRec(m,r);}
-
-int totalUnits(const std::vector<int>& counts){
-    int s=0; for(int v:counts) s+=v; return s;
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  UI HELPERS
 // ═══════════════════════════════════════════════════════════════
-void drawHealthBar(Vector2 pos,float hp,float maxHp,float w){
-    float r=hp/maxHp;
-    DrawRectangle((int)(pos.x-w/2),(int)(pos.y-22),(int)w,5,DARKGRAY);
-    DrawRectangle((int)(pos.x-w/2),(int)(pos.y-22),(int)(w*r),5,r>0.5f?GREEN:r>0.25f?YELLOW:RED);
-}
-
 bool drawButton(Rectangle r,const char* lbl,Vector2 m,
                 Color cn={40,60,40,255},Color ch={70,120,60,255}){
     bool hv=btnHover(r,m);
     DrawRectangleRec(r,hv?ch:cn);
-    DrawRectangleLinesEx(r,2,hv?GREEN:Color{80,130,80,255});
+    DrawRectangleLinesEx(r,2,hv?Color{220,200,140,255}:Color{120,100,60,255});
     int tw=MeasureText(lbl,18);
-    DrawText(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-9),18,hv?WHITE:LIGHTGRAY);
+    DrawText(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-9),18,hv?Color{255,240,200,255}:Color{200,185,140,255});
     return hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
 }
 
 float drawSlider(Rectangle r,float val,float vmin,float vmax,
                  const char* label,const char* fmt,Vector2 mouse,
-                 Color fill={60,180,60,200}){
-    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-18),14,LIGHTGRAY);
-    DrawRectangleRec(r,{25,25,25,255});
-    DrawRectangleLinesEx(r,1,{70,70,70,255});
+                 Color fill={140,100,40,200}){
+    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-18),13,{200,185,140,255});
+    DrawRectangleRec(r,{20,18,12,255});
+    DrawRectangleLinesEx(r,1,{80,65,40,255});
     float t=(val-vmin)/(vmax-vmin);
     DrawRectangle((int)r.x,(int)r.y,(int)(t*r.width),(int)r.height,fill);
     float kx=r.x+t*r.width;
-    DrawRectangle((int)(kx-5),(int)(r.y-3),10,(int)(r.height+6),WHITE);
-    DrawText(TextFormat(fmt,val),(int)(r.x+r.width+8),(int)(r.y+1),14,WHITE);
+    DrawRectangle((int)(kx-5),(int)(r.y-3),10,(int)(r.height+6),{220,200,140,255});
+    DrawText(TextFormat(fmt,val),(int)(r.x+r.width+8),(int)(r.y+1),13,{220,200,140,255});
     if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)&&CheckCollisionPointRec(mouse,r)){
         t=(mouse.x-r.x)/r.width; t=fmaxf(0,fminf(1,t));
         val=vmin+t*(vmax-vmin);
@@ -242,340 +453,278 @@ float drawSlider(Rectangle r,float val,float vmin,float vmax,
     return val;
 }
 
-// Dibuja una X como cruz usando líneas (no texto, para evitar problemas de fuente)
-void drawXCross(int cx,int cy,int size,Color col){
-    int h=size/2;
-    DrawLine(cx-h,cy-h,cx+h,cy+h,col);
-    DrawLine(cx+h,cy-h,cx-h,cy+h,col);
-    // Segunda pasada más gruesa
-    DrawLine(cx-h+1,cy-h,cx+h+1,cy+h,col);
-    DrawLine(cx+h+1,cy-h,cx-h+1,cy+h,col);
+void drawHealthBar(Vector2 pos,float hp,float maxHp,float w){
+    float ratio=hp/maxHp;
+    DrawRectangle((int)(pos.x-w/2),(int)(pos.y-24),(int)w,5,{20,15,10,200});
+    Color hcol=ratio>0.5f?Color{60,180,50,255}:ratio>0.25f?Color{200,180,30,255}:Color{200,50,30,255};
+    DrawRectangle((int)(pos.x-w/2),(int)(pos.y-24),(int)(w*ratio),5,hcol);
 }
 
 void drawSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale,Color tint){
-    float s=SPR_SIZE*scale;
-    DrawTexturePro(tex,{0,0,(float)SPR_SIZE,(float)SPR_SIZE},
-                   {pos.x,pos.y,s,s},{s/2,s/2},-angleDeg+90.0f,tint);
+    float s=16*scale;
+    DrawTexturePro(tex,{0,0,16,16},{pos.x,pos.y,s,s},{s/2,s/2},-angleDeg+180.0f,tint);
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  MENÚ PRINCIPAL
+//  MAIN MENU
 // ═══════════════════════════════════════════════════════════════
-GameState updateDrawMenu(Vector2 mouse,float t){
-    ClearBackground({10,15,10,255});
-    for(int x=0;x<SCREEN_W;x+=64)
-        DrawLine(x,0,x,SCREEN_H,{20,35,20,(unsigned char)(80+25*(int)sinf(t+x*0.01f))});
-    for(int y=0;y<SCREEN_H;y+=64)
-        DrawLine(0,y,SCREEN_W,y,{20,35,20,(unsigned char)(80+25*(int)sinf(t+y*0.01f))});
+GameState updateDrawMenu(Vector2 mouse, float t){
+    // Parchment/dark medieval background
+    ClearBackground({15,12,8,255});
 
-    const char* title="RTS PIXEL WAR";
-    int tw=MeasureText(title,60);
-    DrawText(title,SCREEN_W/2-tw/2+2,122,60,{0,80,0,200});
-    DrawText(title,SCREEN_W/2-tw/2,  120,60,GREEN);
-    const char* sub="Estrategia en tiempo real — pixel art";
-    DrawText(sub,SCREEN_W/2-MeasureText(sub,18)/2,196,18,{120,180,120,255});
+    // Grid pattern
+    for(int x=0;x<SCREEN_W;x+=48)
+        DrawLine(x,0,x,SCREEN_H,{30,25,15,(unsigned char)(40+10*(int)sinf(t+x*0.02f))});
+    for(int y=0;y<SCREEN_H;y+=48)
+        DrawLine(0,y,SCREEN_W,y,{30,25,15,(unsigned char)(40+10*(int)sinf(t+y*0.02f))});
 
-    float bx=SCREEN_W/2-155.0f,bw=310,bh=52;
-    if(drawButton({bx,270,bw,bh},"QUICK BATTLE",mouse))        return STATE_PLAYING;
-    if(drawButton({bx,338,bw,bh},"CUSTOM BATTLE",mouse))       return STATE_CUSTOM_BATTLE;
-    if(drawButton({bx,406,bw,bh},"EDITOR DE UNIDADES",mouse))  return STATE_UNIT_EDITOR;
-    drawButton({bx,474,bw,bh},"SALIR",mouse,{60,30,30,255},{110,50,50,255});
+    // Decorative border
+    DrawRectangleLinesEx({10,10,(float)SCREEN_W-20,(float)SCREEN_H-20},3,{120,95,45,180});
+    DrawRectangleLinesEx({18,18,(float)SCREEN_W-36,(float)SCREEN_H-36},1,{90,70,30,120});
 
-    DrawText("Clic IZQ: seleccionar  |  Clic DER: mover  |  Arrastrar: seleccion multiple  |  F11: pantalla completa",
-             SCREEN_W/2-MeasureText("Clic IZQ: seleccionar  |  Clic DER: mover  |  Arrastrar: seleccion multiple  |  F11: pantalla completa",12)/2,
-             742,12,{70,110,70,255});
+    // Corner ornaments
+    auto corner=[&](int cx,int cy){
+        DrawRectangle(cx-8,cy-2,16,4,{150,115,55,255});
+        DrawRectangle(cx-2,cy-8,4,16,{150,115,55,255});
+        DrawCircleLines(cx,cy,10,{120,90,40,180});
+    };
+    corner(20,20); corner(SCREEN_W-20,20);
+    corner(20,SCREEN_H-20); corner(SCREEN_W-20,SCREEN_H-20);
+
+    // Title banner
+    DrawRectangle(SCREEN_W/2-320,80,640,90,{25,18,10,230});
+    DrawRectangleLinesEx({(float)(SCREEN_W/2-320),80,640,90},2,{150,115,55,255});
+
+    const char* title="MEDIEVAL WARFARE";
+    int tw=MeasureText(title,52);
+    DrawText(title,SCREEN_W/2-tw/2+2,92,52,{80,50,10,200});
+    DrawText(title,SCREEN_W/2-tw/2,90,52,{220,185,100,255});
+
+    const char* sub="A Total War in the Age of Knights";
+    DrawText(sub,SCREEN_W/2-MeasureText(sub,16)/2,152,16,{160,130,70,220});
+
+    // Buttons
+    float bx=SCREEN_W/2-170.0f, bw=340, bh=56;
+    if(drawButton({bx,260,bw,bh},"CUSTOM BATTLE",mouse,{35,25,12,255},{65,50,20,255})) return STATE_CUSTOM_BATTLE;
+    if(drawButton({bx,330,bw,bh},"UNIT EDITOR",mouse,{35,25,12,255},{65,50,20,255}))   return STATE_UNIT_EDITOR;
+    if(drawButton({bx,400,bw,bh},"EXIT GAME",mouse,{50,20,12,255},{90,35,18,255}))      return STATE_MENU; // handled in main
+
+    // Controls hint
+    const char* hint="LMB: Select Units  |  RMB: Move / Attack  |  Drag: Box Select  |  F11: Fullscreen";
+    DrawText(hint,SCREEN_W/2-MeasureText(hint,12)/2,SCREEN_H-36,12,{100,80,40,200});
+
     return STATE_MENU;
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  CUSTOM BATTLE
 // ═══════════════════════════════════════════════════════════════
-struct UnitEntry { int typeIdx; };
-
-static std::vector<UnitEntry> g_playerUnits;
-static std::vector<UnitEntry> g_enemyUnits;
 static bool g_customInit=false;
 
-static void syncCounts(BattleConfig& cfg){
-    resizeBattleConfig(cfg);
-    for(int i=0;i<unitTypeCount();i++){ cfg.playerCounts[i]=0; cfg.enemyCounts[i]=0; }
-    for(auto& u:g_playerUnits) if(u.typeIdx<unitTypeCount()) cfg.playerCounts[u.typeIdx]++;
-    for(auto& u:g_enemyUnits)  if(u.typeIdx<unitTypeCount()) cfg.enemyCounts[u.typeIdx]++;
-}
-
-// Dibuja la lista de un ejército con botón X dibujado (cruz) por unidad
-static int drawArmyList(std::vector<UnitEntry>& list,float x,float y,float w,float h,
-                         Color borderCol,Color titleCol,const char* title,Vector2 mouse,bool isPlayer){
-    DrawRectangle((int)x,(int)y,(int)w,(int)h,{10,15,10,230});
-    DrawRectangleLinesEx({x,y,w,h},2,borderCol);
-    DrawText(title,(int)(x+12),(int)(y+10),16,titleCol);
-    int cnt=(int)list.size();
-    DrawText(TextFormat("(%d unidades)",cnt),(int)(x+w-MeasureText(TextFormat("(%d unidades)",cnt),13)-12),(int)(y+13),13,{150,150,150,255});
-    DrawLine((int)x,(int)(y+34),(int)(x+w),(int)(y+34),{borderCol.r,borderCol.g,borderCol.b,80});
-
-    float iy=y+40, rowH=30, maxH=h-46;
-    int typeCount[64]={};
-    int removeIdx=-1;
-
-    for(int i=0;i<cnt;i++){
-        if(iy-y>maxH) break;
-        int ti=list[i].typeIdx;
-        if(ti>=unitTypeCount()) continue;
-        int instNum=++typeCount[ti];
-        Color rowBg=isPlayer?
-            (i%2==0?Color{10,20,40,200}:Color{8,16,32,200}):
-            (i%2==0?Color{35,10,10,200}:Color{28,8,8,200});
-        DrawRectangle((int)x,(int)iy,(int)w,(int)rowH,rowBg);
-
-        const UnitTypeDef& td=g_unitTypes[ti];
-        Color typeCol=isPlayer?
-            Color{td.r,td.g,td.b,255}:
-            Color{clampU8((int)(td.r*0.5f+90)),clampU8((int)(td.g*0.3f)),clampU8((int)(td.b*0.3f)),255};
-        DrawRectangle((int)(x+8),(int)(iy+7),12,16,typeCol);
-        DrawText(TextFormat("%s %d",td.name,instNum),(int)(x+26),(int)(iy+8),14,WHITE);
-
-        // Botón X — dibujado como cruz con líneas (no texto)
-        float bxb=x+w-36, byb=iy+4;
-        bool hv=CheckCollisionPointRec(mouse,{bxb,byb,28,22});
-        DrawRectangle((int)bxb,(int)byb,28,22,hv?Color{180,30,30,255}:Color{90,20,20,200});
-        DrawRectangleLinesEx({bxb,byb,28,22},1,hv?RED:Color{130,40,40,255});
-        Color xCol=hv?WHITE:Color{220,140,140,255};
-        int cxb=(int)(bxb+14), cyb=(int)(byb+11);
-        DrawLine(cxb-5,cyb-5,cxb+5,cyb+5,xCol);
-        DrawLine(cxb+5,cyb-5,cxb-5,cyb+5,xCol);
-        DrawLine(cxb-4,cyb-5,cxb+6,cyb+5,xCol);
-        DrawLine(cxb+6,cyb-5,cxb-4,cyb+5,xCol);
-        if(hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) removeIdx=i;
-
-        iy+=rowH;
-    }
-    if(list.empty())
-        DrawText("Sin unidades",(int)(x+12),(int)(y+50),14,{80,80,80,255});
-    return removeIdx;
-}
-
 GameState updateDrawCustomBattle(BattleConfig& cfg, Vector2 mouse){
-    if(!g_customInit){
-        g_playerUnits.clear(); g_enemyUnits.clear();
-        resizeBattleConfig(cfg);
-        for(int t=0;t<unitTypeCount();t++){
-            for(int i=0;i<cfg.playerCounts[t];i++) g_playerUnits.push_back({t});
-            for(int i=0;i<cfg.enemyCounts[t];i++)  g_enemyUnits.push_back({t});
-        }
-        g_customInit=true;
-    }
+    if(!g_customInit){ resizeBattleConfig(cfg); g_customInit=true; }
 
-    ClearBackground({8,12,8,255});
-    for(int gx=0;gx<SCREEN_W;gx+=40) DrawLine(gx,0,gx,SCREEN_H,{20,32,20,60});
-    for(int gy=0;gy<SCREEN_H;gy+=40) DrawLine(0,gy,SCREEN_W,gy,{20,32,20,60});
+    ClearBackground({12,10,6,255});
+    for(int x=0;x<SCREEN_W;x+=48) DrawLine(x,0,x,SCREEN_H,{28,22,12,50});
+    for(int y=0;y<SCREEN_H;y+=48) DrawLine(0,y,SCREEN_W,y,{28,22,12,50});
 
-    // ── Cabecera ──────────────────────────────────────────────
-    DrawRectangle(0,0,SCREEN_W,52,{0,0,0,220});
-    DrawText("CUSTOM BATTLE",16,10,26,GREEN);
-    DrawText("Configura los ejercitos antes de la batalla",16,38,13,{100,160,100,255});
+    DrawRectangle(0,0,SCREEN_W,56,{8,6,3,240});
+    DrawRectangleLinesEx({0,56,(float)SCREEN_W,1},1,{120,95,45,180});
 
-    // ── ZONA SUPERIOR: dos columnas ejércitos ─────────────────
-    // Layout: cabecera(52) | ejércitos(topH) | unidades(unitH) | barra inferior fija(bottomBarH)
-    int bottomBarH = 60;  // zona reservada para dificultad + botones
-    int topH = 340;
-    int unitAreaY = 52 + topH + 6;
-    int unitAreaH = SCREEN_H - unitAreaY - bottomBarH;
+    DrawText("DEPLOY YOUR FORCES",20,12,28,{220,185,100,255});
+    DrawText("Choose how many units to deploy on each side",20,44,13,{140,115,60,200});
 
-    float colW=(SCREEN_W-30)/2.0f;
-    int pRemove=drawArmyList(g_playerUnits,10,52,colW-5,topH,
-                              {60,120,220,255},{80,160,255,255},"NUESTRO EJERCITO",mouse,true);
-    if(pRemove>=0){ g_playerUnits.erase(g_playerUnits.begin()+pRemove); syncCounts(cfg); }
-
-    float rightX=colW+20;
-    int eRemove=drawArmyList(g_enemyUnits,rightX,52,colW-10,topH,
-                              {200,50,50,255},{255,100,100,255},"EJERCITO ENEMIGO (IA)",mouse,false);
-    if(eRemove>=0){ g_enemyUnits.erase(g_enemyUnits.begin()+eRemove); syncCounts(cfg); }
-
-    // ── ZONA MEDIA: tipos de unidades disponibles ─────────────
-    float bY=(float)unitAreaY;
-    DrawRectangle(0,(int)bY,SCREEN_W,unitAreaH,{10,18,10,220});
-    DrawLine(0,(int)bY,SCREEN_W,(int)bY,{60,100,60,180});
-    DrawText("UNIDADES DISPONIBLES",16,(int)(bY+8),15,{120,200,120,255});
-
+    int headerH=60, bottomH=64;
+    int bodyY=headerH+4, bodyH=SCREEN_H-headerH-bottomH-8;
     int nc=unitTypeCount();
     float cardW=(SCREEN_W-40.0f)/nc;
-    float cardX=20, cardY=bY+32;
-    float cardH=(float)unitAreaH-40;
 
     for(int i=0;i<nc;i++){
         const UnitTypeDef& td=g_unitTypes[i];
-        DrawRectangle((int)cardX,(int)cardY,(int)(cardW-8),(int)cardH,{14,24,14,220});
-        DrawRectangleLinesEx({cardX,cardY,cardW-8,cardH},1,{50,90,50,255});
+        float cx=20+i*cardW, cy=(float)bodyY;
+        float cw=cardW-8, ch=(float)bodyH;
 
-        Color typeCol={td.r,td.g,td.b,255};
-        DrawRectangle((int)(cardX+8),(int)(cardY+8),(int)(cardW-24),18,typeCol);
-        int nw=MeasureText(td.name,14);
-        DrawText(td.name,(int)(cardX+(cardW-8)/2-nw/2),(int)(cardY+10),14,{10,10,10,255});
+        Color roleBg={25,20,10,220};
+        DrawRectangle((int)cx,(int)cy,(int)cw,(int)ch,roleBg);
+        DrawRectangleLinesEx({cx,cy,cw,ch},1,{100,80,35,200});
 
-        float sy2=cardY+34;
-        float dps=td.damage/td.attackCooldown;
-        DrawText(TextFormat("HP:  %.0f",td.hp),           (int)(cardX+8),(int)sy2,12,{60,220,60,255});   sy2+=15;
-        DrawText(TextFormat("DMG: %.0f",td.damage),        (int)(cardX+8),(int)sy2,12,{220,160,40,255});  sy2+=15;
-        DrawText(TextFormat("Vel: %.0f",td.speed),         (int)(cardX+8),(int)sy2,12,{60,180,220,255});  sy2+=15;
-        DrawText(TextFormat("Rng: %.0f",td.attackRange),   (int)(cardX+8),(int)sy2,12,{200,200,80,255});  sy2+=15;
-        DrawText(TextFormat("DPS: %.1f",dps),              (int)(cardX+8),(int)sy2,12,YELLOW);            sy2+=18;
+        // Header with unit name
+        Color roleCol={220,185,100,255};
+        switch(td.role){
+            case ROLE_HEAVY_INF: roleCol={180,100,60,255}; break;
+            case ROLE_RANGED:    roleCol={100,180,120,255}; break;
+            case ROLE_LIGHT_CAV: roleCol={100,140,220,255}; break;
+            case ROLE_HEAVY_CAV: roleCol={200,160,220,255}; break;
+            default: break;
+        }
+        DrawRectangle((int)cx,(int)cy,(int)cw,28,{20,15,8,220});
+        int nw=MeasureText(td.name,13);
+        DrawText(td.name,(int)(cx+cw/2-nw/2),(int)(cy+7),13,roleCol);
 
-        float btnW=cardW-20, btnX=cardX+6;
-        // + Nuestro (azul)
-        Rectangle rp={btnX,sy2,btnW,24};
-        bool pvHv=CheckCollisionPointRec(mouse,rp);
-        DrawRectangleRec(rp,pvHv?Color{40,80,180,255}:Color{20,50,120,220});
-        DrawRectangleLinesEx(rp,1,pvHv?Color{100,160,255,255}:Color{50,100,200,255});
-        int tpw=MeasureText("+ Nuestro",13);
-        DrawText("+ Nuestro",(int)(btnX+btnW/2-tpw/2),(int)(sy2+5),13,pvHv?WHITE:Color{160,200,255,255});
-        if(pvHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){ g_playerUnits.push_back({i}); syncCounts(cfg); }
-        sy2+=30;
-        // + Enemigo (rojo)
-        Rectangle re2={btnX,sy2,btnW,24};
-        bool evHv=CheckCollisionPointRec(mouse,re2);
-        DrawRectangleRec(re2,evHv?Color{160,30,30,255}:Color{100,15,15,220});
-        DrawRectangleLinesEx(re2,1,evHv?Color{255,100,100,255}:Color{180,50,50,255});
-        int tew=MeasureText("+ Enemigo",13);
-        DrawText("+ Enemigo",(int)(btnX+btnW/2-tew/2),(int)(sy2+5),13,evHv?WHITE:Color{255,160,160,255});
-        if(evHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){ g_enemyUnits.push_back({i}); syncCounts(cfg); }
+        // Sprite preview
+        if(i<(int)g_playerTex.size())
+            drawSprite(g_playerTex[i],{cx+cw/2,cy+60},0,3.5f,WHITE);
 
-        cardX+=cardW;
+        // Stats
+        float sy=cy+100;
+        auto statLine=[&](const char* lbl,const char* val,Color vc){
+            int lw=MeasureText(lbl,11);
+            DrawText(lbl,(int)(cx+6),(int)sy,11,{150,130,80,255});
+            DrawText(val,(int)(cx+cw-MeasureText(val,11)-6),(int)sy,11,vc);
+            sy+=15;
+        };
+        statLine("Entities:", TextFormat("%d",td.numEntities),{200,200,200,255});
+        statLine("HP/Entity:",TextFormat("%.0f",td.healthPerEntity),{60,220,60,255});
+        statLine("Armour:",   TextFormat("%.0f",td.armour),{180,180,100,255});
+        statLine("Speed:",    TextFormat("%.0f",td.speed),{100,180,220,255});
+        statLine("Melee Atk:",TextFormat("%d",td.meleeAttack),{220,160,60,255});
+        statLine("Melee Def:",TextFormat("%d",td.meleeDefense),{100,200,120,255});
+        if(td.range>0){
+            statLine("Range:",TextFormat("%.0f",td.range),{200,220,100,255});
+            statLine("Miss. DMG:",TextFormat("%.0f+%.0fAP",td.missileBaseDmg,td.missileAPDmg),YELLOW);
+        }
+        statLine("Cost:",TextFormat("%dg",td.cost),{220,185,100,255});
+
+        // Selector buttons
+        sy=cy+ch-88;
+        DrawText("PLAYER ARMY",(int)(cx+6),(int)sy,11,{100,160,240,255}); sy+=14;
+        Rectangle rm={(cx+4),(sy),(cw-8),24};
+        bool rmhv=CheckCollisionPointRec(mouse,rm);
+        DrawRectangleRec(rm,rmhv?Color{40,60,100,255}:Color{20,35,65,220});
+        DrawRectangleLinesEx(rm,1,rmhv?Color{100,150,255,255}:Color{50,80,150,255});
+        int pCount=i<(int)cfg.playerCounts.size()?cfg.playerCounts[i]:0;
+        // - button
+        Rectangle pMinus={cx+4,sy,26,24};
+        Rectangle pPlus={cx+cw-30,sy,26,24};
+        Rectangle pLabel={cx+30,sy,cw-64,24};
+        bool pmHv=CheckCollisionPointRec(mouse,pMinus);
+        bool ppHv=CheckCollisionPointRec(mouse,pPlus);
+        DrawRectangleRec(pMinus,pmHv?Color{120,60,30,255}:Color{70,35,15,220});
+        DrawRectangleLinesEx(pMinus,1,{150,80,40,255});
+        DrawText("-",(int)(pMinus.x+8),(int)(pMinus.y+4),16,{220,185,100,255});
+        DrawRectangleRec(pPlus,ppHv?Color{30,90,40,255}:Color{15,50,20,220});
+        DrawRectangleLinesEx(pPlus,1,{60,150,80,255});
+        DrawText("+",(int)(pPlus.x+6),(int)(pPlus.y+4),16,{120,220,140,255});
+        DrawRectangleRec(pLabel,{15,18,8,220});
+        DrawText(TextFormat("%d",pCount),(int)(pLabel.x+pLabel.width/2-MeasureText(TextFormat("%d",pCount),14)/2),(int)(pLabel.y+4),14,WHITE);
+        if(pmHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)&&pCount>0) cfg.playerCounts[i]--;
+        if(ppHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) cfg.playerCounts[i]++;
+        sy+=30;
+
+        DrawText("ENEMY ARMY",(int)(cx+6),(int)sy,11,{220,100,80,255}); sy+=14;
+        int eCount=i<(int)cfg.enemyCounts.size()?cfg.enemyCounts[i]:0;
+        Rectangle eMinus={cx+4,sy,26,24};
+        Rectangle ePlus={cx+cw-30,sy,26,24};
+        Rectangle eLabel={cx+30,sy,cw-64,24};
+        bool emHv=CheckCollisionPointRec(mouse,eMinus);
+        bool epHv=CheckCollisionPointRec(mouse,ePlus);
+        DrawRectangleRec(eMinus,emHv?Color{120,60,30,255}:Color{70,35,15,220});
+        DrawRectangleLinesEx(eMinus,1,{150,80,40,255});
+        DrawText("-",(int)(eMinus.x+8),(int)(eMinus.y+4),16,{220,185,100,255});
+        DrawRectangleRec(ePlus,epHv?Color{120,30,30,255}:Color{70,15,15,220});
+        DrawRectangleLinesEx(ePlus,1,{180,60,60,255});
+        DrawText("+",(int)(ePlus.x+6),(int)(ePlus.y+4),16,{220,100,80,255});
+        DrawRectangleRec(eLabel,{20,8,8,220});
+        DrawText(TextFormat("%d",eCount),(int)(eLabel.x+eLabel.width/2-MeasureText(TextFormat("%d",eCount),14)/2),(int)(eLabel.y+4),14,WHITE);
+        if(emHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)&&eCount>0) cfg.enemyCounts[i]--;
+        if(epHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) cfg.enemyCounts[i]++;
     }
 
-    // ── BARRA INFERIOR FIJA: Dificultad + Botones (sin solapamiento) ──
-    int barY=SCREEN_H-bottomBarH;
-    DrawRectangle(0,barY,SCREEN_W,bottomBarH,{0,0,0,200});
-    DrawLine(0,barY,SCREEN_W,barY,{60,100,60,160});
+    // Bottom bar
+    int barY=SCREEN_H-bottomH;
+    DrawRectangle(0,barY,SCREEN_W,bottomH,{8,6,3,240});
+    DrawLine(0,barY,SCREEN_W,barY,{120,95,45,180});
 
-    // Zona dificultad (izquierda)
-    Color dcol=cfg.difficulty<0.8f?Color{60,200,60,200}:
-               cfg.difficulty<1.2f?Color{200,200,60,200}:
-               cfg.difficulty<1.6f?Color{220,130,40,200}:Color{220,50,50,200};
-    const char* dlbl=cfg.difficulty<0.8f?"Facil":cfg.difficulty<1.2f?"Normal":
-                     cfg.difficulty<1.6f?"Dificil":"EXTREMO";
-    Color dclr=cfg.difficulty<0.8f?GREEN:cfg.difficulty<1.2f?YELLOW:
-               cfg.difficulty<1.6f?ORANGE:RED;
+    // Difficulty
+    DrawText("Difficulty:",(int)20,(int)(barY+10),13,{200,185,140,255});
+    cfg.difficulty=drawSlider({20,(float)(barY+26),300,16},cfg.difficulty,0.5f,2.0f,nullptr,"%.2fx",mouse);
+    const char* dlbl=cfg.difficulty<0.8f?"Easy":cfg.difficulty<1.2f?"Normal":cfg.difficulty<1.6f?"Hard":"BRUTAL";
+    Color dcol=cfg.difficulty<0.8f?GREEN:cfg.difficulty<1.2f?YELLOW:cfg.difficulty<1.6f?ORANGE:RED;
+    DrawText(dlbl,328,(int)(barY+28),13,dcol);
 
-    DrawText("Dificultad:"  ,16,barY+10,13,LIGHTGRAY);
-    cfg.difficulty=drawSlider({16,(float)(barY+26),380,16},cfg.difficulty,0.5f,2.0f,
-                              nullptr,"%.2fx",mouse,dcol);
-    DrawText(TextFormat("%.2fx",cfg.difficulty),402,barY+28,13,WHITE);
-    DrawText(dlbl,460,barY+28,13,dclr);
-
-    // Zona botones (derecha)
-    int pTotal=totalUnits(cfg.playerCounts);
-    int eTotal=totalUnits(cfg.enemyCounts);
-    bool canStart=(pTotal>0&&eTotal>0);
-    Color startCN=canStart?Color{30,70,30,255}:Color{35,35,35,255};
-    Color startCH=canStart?Color{60,140,60,255}:Color{35,35,35,255};
-
-    if(drawButton({(float)(SCREEN_W-420),barY+10,280,38},"INICIAR BATALLA",mouse,startCN,startCH)&&canStart){
+    int pTotal=0,eTotal=0;
+    for(int v:cfg.playerCounts) pTotal+=v;
+    for(int v:cfg.enemyCounts) eTotal+=v;
+    bool canStart=pTotal>0&&eTotal>0;
+    Color sc=canStart?Color{35,25,10,255}:Color{30,25,20,255};
+    Color sh=canStart?Color{65,50,20,255}:Color{30,25,20,255};
+    if(drawButton({(float)(SCREEN_W-370),(float)(barY+10),240,42},"COMMENCE BATTLE",mouse,sc,sh)&&canStart){
         g_customInit=false;
         return STATE_PLAYING;
     }
-    if(!canStart)
-        DrawText("Añade unidades a ambos lados",(int)(SCREEN_W-420),(int)(barY+52),12,{200,100,50,255});
-    if(drawButton({(float)(SCREEN_W-130),barY+10,118,38},"VOLVER",mouse,{40,25,25,255},{80,40,40,255})){
-        g_customInit=false;
-        return STATE_MENU;
+    if(!canStart) DrawText("Add units to both sides",(int)(SCREEN_W-370),(int)(barY+55),12,{180,100,50,255});
+    if(drawButton({(float)(SCREEN_W-120),(float)(barY+10),108,42},"BACK",mouse,{45,25,12,255},{80,40,20,255})){
+        g_customInit=false; return STATE_MENU;
     }
 
     return STATE_CUSTOM_BATTLE;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EDITOR DE UNIDADES
-//  — Panel izquierdo: dropdown tipo + sliders stats + color
-//  — Panel derecho:   preview solo del tipo seleccionado + stats
-//  — Sin "Army a editar"
-//  — Botón "Crear nuevo tipo" para añadir tipos custom
+//  UNIT EDITOR
 // ═══════════════════════════════════════════════════════════════
-
-// Estado persistente del editor
 static int    g_editTypeIdx=0;
 static bool   g_dropdownOpen=false;
-static bool   g_editTexDirty=false;
-// Estado para crear nuevo tipo
+static bool   g_editorTexDirty=false;
 static bool   g_creatingNew=false;
-static UnitTypeDef g_newTypeDraft;
-static char   g_newTypeName[32]="NuevoTipo";
-static int    g_nameEditActive=0; // 1=nombre activo para edición
+static UnitTypeDef g_newDraft={};
+static int    g_nameEditActive=0;
+static Texture2D  g_previewTex={0};
+static Texture2D  g_draftTex={0};
 
-static Texture2D g_previewTex={0};  // textura de preview del tipo activo
-
-void rebuildPreviewTex(){
+void rebuildEditorPreview(){
     if(g_previewTex.id>0) UnloadTexture(g_previewTex);
     if(g_editTypeIdx<unitTypeCount()){
         const UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
+        Color ac={td.r,td.g,td.b,255}, hc={td.hr,td.hg,td.hb,255};
         Image img;
-        switch(td.spriteBase){
-            case SPR_SOLDIER: img=makeSoldierImg(td.r,td.g,td.b); break;
-            case SPR_SNIPER:  img=makeSniperImg(td.r,td.g,td.b); break;
-            default:          img=makeTankImg(td.r,td.g,td.b); break;
-        }
+        if(td.range>0&&td.role==ROLE_RANGED)
+            img=makeRangedSprite(ac,hc,td.isCrossbow);
+        else
+            img=makeUnitSprite(ac,hc,C_WEAPON_METAL,td.hasShield,td.isPolearm,td.isCav,td.horseCol);
         g_previewTex=imgToTex(img);
     }
-}
-
-Texture2D makeDraftPreview(const UnitTypeDef& td){
-    Image img;
-    switch(td.spriteBase){
-        case SPR_SOLDIER: img=makeSoldierImg(td.r,td.g,td.b); break;
-        case SPR_SNIPER:  img=makeSniperImg(td.r,td.g,td.b); break;
-        default:          img=makeTankImg(td.r,td.g,td.b); break;
-    }
-    return imgToTex(img);
 }
 
 GameState updateDrawUnitEditor(Vector2 mouse){
     if(g_editTypeIdx>=unitTypeCount()) g_editTypeIdx=0;
 
-    ClearBackground({8,12,18,255});
-    for(int gx=0;gx<SCREEN_W;gx+=40) DrawLine(gx,0,gx,SCREEN_H,{18,22,38,80});
-    for(int gy=0;gy<SCREEN_H;gy+=40) DrawLine(0,gy,SCREEN_W,gy,{18,22,38,80});
+    ClearBackground({10,8,5,255});
+    for(int x=0;x<SCREEN_W;x+=48) DrawLine(x,0,x,SCREEN_H,{22,18,10,60});
+    for(int y=0;y<SCREEN_H;y+=48) DrawLine(0,y,SCREEN_W,y,{22,18,10,60});
 
-    // ── Cabecera ──────────────────────────────────────────────
-    DrawRectangle(0,0,SCREEN_W,52,{0,0,0,220});
-    DrawText("EDITOR DE UNIDADES",16,10,26,GREEN);
-    DrawText("Edita los stats de cada tipo. Los cambios se aplican al instante.",16,38,12,{100,160,100,255});
+    DrawRectangle(0,0,SCREEN_W,54,{6,5,3,240});
+    DrawRectangleLinesEx({0,54,(float)SCREEN_W,1},1,{120,95,45,180});
+    DrawText("UNIT EDITOR",18,10,28,{220,185,100,255});
+    DrawText("Edit unit stats — changes apply immediately in battle",18,42,12,{140,115,60,200});
 
-    // ── Layout: panel izq (sliders) / panel der (preview) ─────
-    int headerH=52;
-    int panelY=headerH+6;
-    int panelH=SCREEN_H-panelY-52;  // 52 abajo para el botón volver
-    int leftW=500;
-    int rightX=leftW+20;
-    int rightW=SCREEN_W-rightX-10;
+    int headerH=58, btmH=52, panelY=headerH+4;
+    int panelH=SCREEN_H-panelY-btmH;
+    int leftW=480, rightX=leftW+18, rightW=SCREEN_W-rightX-8;
 
-    // Paneles de fondo
-    DrawRectangle(10,panelY,leftW,panelH,{12,18,12,210});
-    DrawRectangleLinesEx({10,(float)panelY,(float)leftW,(float)panelH},1,{50,90,50,200});
-    DrawRectangle(rightX,panelY,rightW,panelH,{12,12,28,210});
-    DrawRectangleLinesEx({(float)rightX,(float)panelY,(float)rightW,(float)panelH},1,{50,50,100,200});
+    DrawRectangle(8,panelY,leftW,panelH,{14,11,6,210});
+    DrawRectangleLinesEx({8,(float)panelY,(float)leftW,(float)panelH},1,{90,70,30,200});
+    DrawRectangle(rightX,panelY,rightW,panelH,{10,8,5,210});
+    DrawRectangleLinesEx({(float)rightX,(float)panelY,(float)rightW,(float)panelH},1,{90,70,30,200});
 
-    // ════════════════════════════════════════════════════════════
-    //  PANEL IZQUIERDO — selector (dropdown) + sliders
-    // ════════════════════════════════════════════════════════════
-    float lx=20, ly=(float)panelY+10;
+    float lx=18, ly=(float)panelY+10;
 
-    // ── Dropdown de tipos ──────────────────────────────────────
-    DrawText("Tipo de unidad:",lx,ly,14,LIGHTGRAY); ly+=20;
+    // Dropdown
+    DrawText("Unit Type:",(int)lx,(int)ly,13,{200,185,140,255}); ly+=18;
     if(g_editTypeIdx<unitTypeCount()){
         const UnitTypeDef& cur=g_unitTypes[g_editTypeIdx];
         Rectangle dropBtn={lx,ly,(float)(leftW-20),28};
-        bool dropHv=CheckCollisionPointRec(mouse,dropBtn);
-        DrawRectangleRec(dropBtn,dropHv?Color{30,70,50,255}:Color{18,40,30,255});
-        DrawRectangleLinesEx(dropBtn,1,g_dropdownOpen?GREEN:Color{50,90,60,255});
+        bool dhv=CheckCollisionPointRec(mouse,dropBtn);
+        DrawRectangleRec(dropBtn,dhv?Color{35,28,14,255}:Color{22,18,8,255});
+        DrawRectangleLinesEx(dropBtn,1,g_dropdownOpen?Color{180,145,70,255}:Color{80,65,30,255});
         Color patch={cur.r,cur.g,cur.b,255};
         DrawRectangle((int)lx+4,(int)ly+6,16,16,patch);
-        DrawText(cur.name,(int)(lx+26),(int)(ly+6),15,WHITE);
-        // Triángulo desplegable
+        DrawText(cur.name,(int)(lx+26),(int)(ly+6),15,{220,185,100,255});
         int tx=(int)(lx+leftW-30), ty=(int)(ly+14);
         DrawTriangle({(float)tx,(float)(ty-5)},{(float)(tx-6),(float)(ty+5)},{(float)(tx+6),(float)(ty+5)},
-                     g_dropdownOpen?GREEN:LIGHTGRAY);
-        if(dropHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_dropdownOpen=!g_dropdownOpen;
+                     g_dropdownOpen?Color{220,185,100,255}:Color{160,130,70,255});
+        if(dhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_dropdownOpen=!g_dropdownOpen;
 
-        // Lista desplegable
         if(g_dropdownOpen){
             float oy=ly+30;
             for(int i=0;i<unitTypeCount();i++){
@@ -583,280 +732,260 @@ GameState updateDrawUnitEditor(Vector2 mouse){
                 bool sel=(i==g_editTypeIdx);
                 Rectangle opt={lx,oy,(float)(leftW-20),26};
                 bool ohv=CheckCollisionPointRec(mouse,opt);
-                DrawRectangleRec(opt,sel?Color{30,80,40,255}:ohv?Color{22,50,32,255}:Color{14,30,20,240});
-                DrawRectangleLinesEx(opt,1,sel?GREEN:Color{40,70,45,255});
+                DrawRectangleRec(opt,sel?Color{50,38,18,255}:ohv?Color{32,26,12,255}:Color{16,13,6,240});
+                DrawRectangleLinesEx(opt,1,sel?Color{180,145,70,255}:Color{60,50,22,255});
                 Color op={td.r,td.g,td.b,255};
                 DrawRectangle((int)lx+4,(int)oy+5,14,14,op);
-                DrawText(td.name,(int)(lx+24),(int)(oy+5),14,sel?GREEN:WHITE);
+                DrawText(td.name,(int)(lx+24),(int)(oy+5),14,sel?Color{220,185,100,255}:Color{180,160,100,255});
                 if(ohv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-                    g_editTypeIdx=i; g_dropdownOpen=false; g_editTexDirty=true;
+                    g_editTypeIdx=i; g_dropdownOpen=false; g_editorTexDirty=true;
                 }
                 oy+=27;
             }
-            // Capturar clic fuera para cerrar
             if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
                 float listH=27.0f*unitTypeCount();
                 if(!CheckCollisionPointRec(mouse,{lx,ly,(float)(leftW-20),28+listH}))
                     g_dropdownOpen=false;
             }
             ly+=(float)(27*unitTypeCount())+36;
-        } else {
-            ly+=36;
-        }
+        } else ly+=36;
     }
 
-    if(g_editTypeIdx>=unitTypeCount()){ ly+=10; goto skipSliders; }
+    if(g_editTypeIdx>=unitTypeCount()) goto skipEditorSliders;
     {
         UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
         bool changed=false;
+        DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{80,65,30,120}); ly+=8;
+        DrawText("COMBAT STATS",(int)lx,(int)ly,12,{180,150,80,255}); ly+=17;
+        float sw=leftW-80;
 
-        DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{50,90,50,120}); ly+=8;
+        auto slid=[&](float& val,float lo,float hi,const char* lbl,const char* fmt,Color fc)->bool{
+            float nv=drawSlider({lx,ly,sw,16},val,lo,hi,lbl,fmt,mouse,fc);
+            bool ch=(nv!=val); val=nv; ly+=36; return ch;
+        };
 
-        // ── Sliders de stats ───────────────────────────────────
-        DrawText("ESTADISTICAS",lx,ly,13,{100,200,100,255}); ly+=18;
-        float sw=leftW-70;
+        changed|=slid(td.healthPerEntity,10,200,"HP per Entity","%.0f",{60,200,60,200});
+        changed|=slid(td.armour,0,100,"Armour","%.0f",{180,180,100,200});
+        changed|=slid(td.speed,30,300,"Speed","%.0f",{80,160,220,200});
+        {float v=(float)td.meleeAttack;
+         float nv=drawSlider({lx,ly,sw,16},v,1,60,"Melee Attack","%.0f",mouse,{220,160,60,200});
+         if(nv!=v){td.meleeAttack=(int)nv;changed=true;} ly+=36;}
+        changed|=slid(td.meleeAttackInterval,0.3f,3.0f,"Melee Interval (s)","%.2f",{200,100,60,200});
+        {float v=(float)td.meleeDefense;
+         float nv=drawSlider({lx,ly,sw,16},v,0,60,"Melee Defense","%.0f",mouse,{80,200,120,200});
+         if(nv!=v){td.meleeDefense=(int)nv;changed=true;} ly+=36;}
+        changed|=slid(td.meleeBaseDmg,1,100,"Melee Base Dmg","%.0f",{220,140,60,200});
+        changed|=slid(td.meleeAPDmg,0,60,"Melee AP Dmg","%.0f",{200,100,60,200});
 
-        float spd=td.speed;
-        spd=drawSlider({lx,ly,sw,18},spd,20,400,"Velocidad","%.0f",mouse,{60,180,220,200});
-        if(spd!=td.speed){td.speed=spd; changed=true;} ly+=42;
+        if(td.range>0){
+            DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{80,65,30,120}); ly+=6;
+            DrawText("RANGED STATS",(int)lx,(int)ly,12,{140,200,120,255}); ly+=15;
+            changed|=slid(td.range,50,400,"Range","%.0f",{140,200,120,200});
+            changed|=slid(td.missileBaseDmg,1,80,"Missile Base Dmg","%.0f",{180,220,80,200});
+            changed|=slid(td.missileAPDmg,0,50,"Missile AP Dmg","%.0f",{160,200,60,200});
+            changed|=slid(td.missileReloadTime,0.5f,6.0f,"Reload Time (s)","%.2f",{200,160,60,200});
+        }
 
-        float hp=td.hp;
-        hp=drawSlider({lx,ly,sw,18},hp,20,600,"Vida (HP)","%.0f",mouse,{60,220,60,200});
-        if(hp!=td.hp){td.hp=hp; changed=true;} ly+=42;
-
-        float dmg=td.damage;
-        dmg=drawSlider({lx,ly,sw,18},dmg,5,200,"Daño","%.0f",mouse,{220,160,40,200});
-        if(dmg!=td.damage){td.damage=dmg; changed=true;} ly+=42;
-
-        float rng=td.attackRange;
-        rng=drawSlider({lx,ly,sw,18},rng,40,400,"Rango","%.0f",mouse,{200,200,80,200});
-        if(rng!=td.attackRange){td.attackRange=rng; changed=true;} ly+=42;
-
-        float cd=td.attackCooldown;
-        cd=drawSlider({lx,ly,sw,18},cd,0.2f,5.0f,"Cadencia (s entre disparos)","%.2f",mouse,{180,80,80,200});
-        if(cd!=td.attackCooldown){td.attackCooldown=cd; changed=true;} ly+=48;
-
-        // ── Color del cuerpo ───────────────────────────────────
-        DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{50,90,50,120}); ly+=8;
-        DrawText("COLOR DEL CUERPO",lx,ly,13,{100,200,100,255}); ly+=18;
-
-        float nr=(float)td.r;
-        nr=drawSlider({lx+18,ly,sw,14},nr,0,255,nullptr,"%.0f",mouse,{220,60,60,200});
-        DrawRectangle((int)lx,(int)ly,14,14,{(unsigned char)nr,0,0,255}); ly+=30;
-
-        float ng=(float)td.g;
-        ng=drawSlider({lx+18,ly,sw,14},ng,0,255,nullptr,"%.0f",mouse,{60,220,60,200});
-        DrawRectangle((int)lx,(int)ly,14,14,{0,(unsigned char)ng,0,255}); ly+=30;
-
-        float nb=(float)td.b;
-        nb=drawSlider({lx+18,ly,sw,14},nb,0,255,nullptr,"%.0f",mouse,{60,60,220,200});
-        DrawRectangle((int)lx,(int)ly,14,14,{0,0,(unsigned char)nb,255}); ly+=36;
-
+        // Color
+        DrawLine((int)lx,(int)ly,(int)(lx+leftW-20),(int)ly,{80,65,30,120}); ly+=6;
+        DrawText("BODY COLOR",(int)lx,(int)ly,12,{180,150,80,255}); ly+=15;
+        float nr=(float)td.r, ng=(float)td.g, nb=(float)td.b;
+        nr=drawSlider({lx+16,ly,sw,13},nr,0,255,nullptr,"%.0f",mouse,{180,40,40,200});
+        DrawRectangle((int)lx,(int)ly,12,13,{(unsigned char)nr,0,0,255}); ly+=26;
+        ng=drawSlider({lx+16,ly,sw,13},ng,0,255,nullptr,"%.0f",mouse,{40,180,40,200});
+        DrawRectangle((int)lx,(int)ly,12,13,{0,(unsigned char)ng,0,255}); ly+=26;
+        nb=drawSlider({lx+16,ly,sw,13},nb,0,255,nullptr,"%.0f",mouse,{40,40,180,200});
+        DrawRectangle((int)lx,(int)ly,12,13,{0,0,(unsigned char)nb,255}); ly+=26;
         if((unsigned char)nr!=td.r||(unsigned char)ng!=td.g||(unsigned char)nb!=td.b){
-            td.r=(unsigned char)nr; td.g=(unsigned char)ng; td.b=(unsigned char)nb;
-            changed=true;
+            td.r=(unsigned char)nr; td.g=(unsigned char)ng; td.b=(unsigned char)nb; changed=true;
         }
-        // Muestra de color
-        DrawRectangle((int)lx,(int)ly,50,20,{td.r,td.g,td.b,255});
-        DrawRectangleLinesEx({(float)lx,(float)ly,50,20},1,WHITE);
-        DrawText(TextFormat("RGB(%d,%d,%d)",td.r,td.g,td.b),(int)(lx+56),(int)(ly+4),13,LIGHTGRAY);
+        DrawRectangle((int)lx,(int)ly,40,16,{td.r,td.g,td.b,255});
+        DrawRectangleLinesEx({(float)lx,(float)ly,40,16},1,WHITE);
+        DrawText(TextFormat("RGB(%d,%d,%d)",td.r,td.g,td.b),(int)(lx+46),(int)(ly+2),12,{180,160,100,255});
 
-        if(changed){
-            rebuildTexture(g_editTypeIdx);
-            g_editTexDirty=true;
-        }
-        if(g_editTexDirty){ rebuildPreviewTex(); g_editTexDirty=false; }
+        if(changed){ rebuildTexture(g_editTypeIdx); g_editorTexDirty=true; }
+        if(g_editorTexDirty){ rebuildEditorPreview(); g_editorTexDirty=false; }
     }
-    skipSliders:;
+    skipEditorSliders:;
 
-    // ════════════════════════════════════════════════════════════
-    //  PANEL DERECHO — preview solo del tipo activo + stats
-    // ════════════════════════════════════════════════════════════
+    // Right panel: preview
     if(g_editTypeIdx<unitTypeCount()){
         const UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
         float px2=(float)rightX, py=(float)panelY, pw=(float)rightW, ph=(float)panelH;
 
-        DrawText(TextFormat("PREVIEW: %s",td.name),(int)(px2+12),(int)(py+12),16,SKYBLUE);
-        DrawLine((int)px2,(int)(py+34),(int)(px2+pw),(int)(py+34),{50,50,100,120});
+        DrawText(TextFormat("PREVIEW: %s",td.name),(int)(px2+12),(int)(py+12),16,{220,185,100,255});
+        DrawLine((int)px2,(int)(py+34),(int)(px2+pw),(int)(py+34),{80,65,30,120});
 
-        // Sprite animado centrado
-        static float pAngle=0; pAngle+=50.0f*GetFrameTime();
-        Vector2 center={px2+pw/2, py+ph*0.38f};
+        static float pAngle=0; pAngle+=45.0f*GetFrameTime();
+        Vector2 center={px2+pw/2, py+ph*0.33f};
         if(g_previewTex.id>0){
-            drawSprite(g_previewTex,center,pAngle,9.0f,{td.r,td.g,td.b,255});
-            DrawCircleLines((int)center.x,(int)center.y,60,{100,100,200,80});
+            drawSprite(g_previewTex,center,pAngle,10.0f,WHITE);
+            DrawCircleLines((int)center.x,(int)center.y,70,{120,95,45,80});
         }
 
-        // Stats del tipo activo
-        float sy=(float)(py+ph*0.62f);
-        float dps=td.damage/td.attackCooldown;
-        DrawText("ESTADISTICAS ACTUALES",(int)(px2+12),(int)sy,14,{100,180,255,255}); sy+=22;
+        float sy=(float)(py+ph*0.55f);
+        DrawText("CURRENT STATS",(int)(px2+12),(int)sy,13,{180,150,80,255}); sy+=20;
 
-        auto statRow=[&](const char* label,float val,Color col){
-            DrawText(label,(int)(px2+12),(int)sy,14,LIGHTGRAY);
-            DrawText(TextFormat("%.1f",val),(int)(px2+160),(int)sy,14,col);
-            sy+=20;
+        auto srow=[&](const char* lbl,const char* val,Color vc){
+            DrawText(lbl,(int)(px2+12),(int)sy,13,{160,140,90,255});
+            DrawText(val,(int)(px2+180),(int)sy,13,vc);
+            sy+=18;
         };
-        statRow("Vida (HP):",    td.hp,    {60,220,60,255});
-        statRow("Daño:",         td.damage,{220,160,40,255});
-        statRow("Velocidad:",    td.speed, {60,180,220,255});
-        statRow("Rango:",        td.attackRange,{200,200,80,255});
-        statRow("Cadencia (s):", td.attackCooldown,{180,80,80,255});
-        DrawText("DPS:",(int)(px2+12),(int)sy,14,LIGHTGRAY);
-        DrawText(TextFormat("%.2f",dps),(int)(px2+160),(int)sy,14,YELLOW); sy+=28;
+        int totalHP=(int)(td.numEntities*td.healthPerEntity);
+        srow("Entities:",   TextFormat("%d",td.numEntities),WHITE);
+        srow("Total HP:",   TextFormat("%d",totalHP),{60,220,60,255});
+        srow("Armour:",     TextFormat("%.0f%%",td.armour),{200,200,100,255});
+        srow("Speed:",      TextFormat("%.0f",td.speed),{100,180,220,255});
+        srow("Melee Atk:",  TextFormat("%d",td.meleeAttack),{220,160,60,255});
+        srow("Melee Def:",  TextFormat("%d",td.meleeDefense),{100,200,120,255});
+        float totalMelee=td.meleeBaseDmg+td.meleeAPDmg;
+        srow("Total Melee:",TextFormat("%.0f (%.0f+%.0fAP)",totalMelee,td.meleeBaseDmg,td.meleeAPDmg),YELLOW);
+        float dps=totalMelee/td.meleeAttackInterval;
+        srow("Melee DPS:",  TextFormat("%.1f",dps),ORANGE);
+        if(td.range>0){
+            srow("Range:",      TextFormat("%.0f",td.range),{140,220,100,255});
+            float totalMiss=td.missileBaseDmg+td.missileAPDmg;
+            srow("Total Missile:",TextFormat("%.0f (%.0f+%.0fAP)",totalMiss,td.missileBaseDmg,td.missileAPDmg),{220,220,100,255});
+            srow("Reload:",     TextFormat("%.2fs",td.missileReloadTime),{180,160,80,255});
+        }
+        srow("Role:",       roleNames[td.role],{180,200,220,255});
+        srow("Cost:",       TextFormat("%d gold",td.cost),{220,185,100,255});
 
-        DrawLine((int)px2,(int)sy,(int)(px2+pw),(int)sy,{50,50,100,120}); sy+=10;
-
-        // Sprite base
-        DrawText("Sprite base:",(int)(px2+12),(int)sy,13,LIGHTGRAY);
-        DrawText(spriteBaseNames[td.spriteBase],(int)(px2+110),(int)sy,13,GREEN); sy+=20;
-
-        if(td.isBuiltin)
-            DrawText("Tipo original (builtin)",(int)(px2+12),(int)sy,12,{120,120,80,255});
-        else
-            DrawText("Tipo personalizado",(int)(px2+12),(int)sy,12,{100,200,100,255});
+        DrawLine((int)px2,(int)sy,(int)(px2+pw),(int)sy,{80,65,30,80}); sy+=8;
+        if(td.isBuiltin) DrawText("Built-in unit",(int)(px2+12),(int)sy,12,{120,100,60,200});
+        else             DrawText("Custom unit",(int)(px2+12),(int)sy,12,{100,180,80,200});
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  PANEL "CREAR NUEVO TIPO" — aparece superpuesto centrado
-    // ════════════════════════════════════════════════════════════
-    static Texture2D draftTex={0};
+    // Create new unit dialog
+    static Texture2D draftPreviewTex={0};
 
     if(g_creatingNew){
-        // Fondo semi-opaco
-        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,180});
-        float dw=700, dh=540;
+        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,200});
+        float dw=680, dh=560;
         float dx=(SCREEN_W-dw)/2, dy=(SCREEN_H-dh)/2;
-        DrawRectangle((int)dx,(int)dy,(int)dw,(int)dh,{12,18,28,245});
-        DrawRectangleLinesEx({dx,dy,dw,dh},2,{80,140,220,255});
-        DrawText("CREAR NUEVO TIPO DE UNIDAD",(int)(dx+20),(int)(dy+14),18,{80,160,255,255});
-        DrawLine((int)dx,(int)(dy+40),(int)(dx+dw),(int)(dy+40),{80,140,220,80});
+        DrawRectangle((int)dx,(int)dy,(int)dw,(int)dh,{14,11,6,248});
+        DrawRectangleLinesEx({dx,dy,dw,dh},2,{180,145,70,255});
+        DrawText("CREATE NEW UNIT TYPE",(int)(dx+20),(int)(dy+14),18,{220,185,100,255});
+        DrawLine((int)dx,(int)(dy+40),(int)(dx+dw),(int)(dy+40),{150,120,50,100});
 
         float cx=dx+20, cy=dy+54;
 
-        // Nombre (edición sencilla con teclado)
-        DrawText("Nombre:",(int)cx,(int)cy,14,LIGHTGRAY); cy+=20;
-        Rectangle nameBox={cx,cy,280,26};
-        bool nameHv=CheckCollisionPointRec(mouse,nameBox);
-        DrawRectangleRec(nameBox,g_nameEditActive?Color{20,40,60,255}:Color{14,26,40,255});
-        DrawRectangleLinesEx(nameBox,1,g_nameEditActive?Color{100,180,255,255}:Color{50,90,130,255});
-        DrawText(g_newTypeDraft.name,(int)(cx+6),(int)(cy+5),14,WHITE);
-        if(g_nameEditActive) DrawText("|",(int)(cx+6+MeasureText(g_newTypeDraft.name,14)),(int)(cy+4),14,WHITE);
-        if(nameHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_nameEditActive=1;
-        else if(!nameHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_nameEditActive=0;
+        DrawText("Name:",(int)cx,(int)cy,14,{200,185,140,255}); cy+=18;
+        Rectangle nameBox={cx,cy,260,26};
+        bool nhv=CheckCollisionPointRec(mouse,nameBox);
+        DrawRectangleRec(nameBox,g_nameEditActive?Color{22,18,8,255}:Color{14,11,5,255});
+        DrawRectangleLinesEx(nameBox,1,g_nameEditActive?Color{180,145,70,255}:Color{80,65,30,255});
+        DrawText(g_newDraft.name,(int)(cx+6),(int)(cy+5),14,{220,185,100,255});
+        if(g_nameEditActive) DrawText("|",(int)(cx+6+MeasureText(g_newDraft.name,14)),(int)(cy+4),14,{220,185,100,255});
+        if(nhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_nameEditActive=1;
+        else if(!nhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_nameEditActive=0;
         if(g_nameEditActive){
             int key=GetCharPressed();
             while(key>0){
-                int len=strlen(g_newTypeDraft.name);
-                if(key>=32&&len<30){ g_newTypeDraft.name[len]=(char)key; g_newTypeDraft.name[len+1]='\0'; }
+                int len=strlen(g_newDraft.name);
+                if(key>=32&&len<46){g_newDraft.name[len]=(char)key;g_newDraft.name[len+1]='\0';}
                 key=GetCharPressed();
             }
-            if(IsKeyPressed(KEY_BACKSPACE)){
-                int len=strlen(g_newTypeDraft.name);
-                if(len>0) g_newTypeDraft.name[len-1]='\0';
-            }
+            if(IsKeyPressed(KEY_BACKSPACE)){int len=strlen(g_newDraft.name);if(len>0)g_newDraft.name[len-1]='\0';}
         }
         cy+=34;
 
-        // Sprite base selector
-        DrawText("Sprite base:",(int)cx,(int)cy,14,LIGHTGRAY); cy+=20;
-        for(int s=0;s<SPR_BASE_COUNT;s++){
-            bool sel=(g_newTypeDraft.spriteBase==(SpriteBase)s);
-            Rectangle sb={cx+s*150.0f,cy,140,26};
-            bool shv=CheckCollisionPointRec(mouse,sb);
-            DrawRectangleRec(sb,sel?Color{20,60,100,255}:shv?Color{18,40,65,255}:Color{12,25,45,255});
-            DrawRectangleLinesEx(sb,1,sel?Color{80,180,255,255}:Color{40,80,120,255});
-            int stw=MeasureText(spriteBaseNames[s],14);
-            DrawText(spriteBaseNames[s],(int)(cx+s*150+(140-stw)/2),(int)(cy+5),14,sel?WHITE:LIGHTGRAY);
-            if(shv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-                g_newTypeDraft.spriteBase=(SpriteBase)s;
-                // Rebuild draft preview
-                if(draftTex.id>0) UnloadTexture(draftTex);
-                draftTex=makeDraftPreview(g_newTypeDraft);
+        // Role selector
+        DrawText("Role:",(int)cx,(int)cy,13,{200,185,140,255}); cy+=17;
+        for(int r=0;r<ROLE_COUNT;r++){
+            bool sel=(g_newDraft.role==(UnitRole)r);
+            float bw=(dw-50.0f)/ROLE_COUNT;
+            Rectangle rb={cx+r*bw,cy,bw-4,24};
+            bool rhv=CheckCollisionPointRec(mouse,rb);
+            DrawRectangleRec(rb,sel?Color{50,38,18,255}:rhv?Color{30,24,10,255}:Color{18,14,6,255});
+            DrawRectangleLinesEx(rb,1,sel?Color{180,145,70,255}:Color{70,55,25,255});
+            int rnw=MeasureText(roleNames[r],11);
+            DrawText(roleNames[r],(int)(rb.x+bw/2-rnw/2),(int)(rb.y+5),11,sel?Color{220,185,100,255}:Color{160,140,80,255});
+            if(rhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+                g_newDraft.role=(UnitRole)r;
+                g_newDraft.isCav=(r==ROLE_LIGHT_CAV||r==ROLE_HEAVY_CAV);
+                g_newDraft.range=(r==ROLE_RANGED)?150.0f:0.0f;
+                if(draftPreviewTex.id>0) UnloadTexture(draftPreviewTex);
+                Color ac2={g_newDraft.r,g_newDraft.g,g_newDraft.b,255};
+                Color hc2={g_newDraft.hr,g_newDraft.hg,g_newDraft.hb,255};
+                Image di2 = g_newDraft.range>0&&g_newDraft.role==ROLE_RANGED ?
+                    makeRangedSprite(ac2,hc2,g_newDraft.isCrossbow) :
+                    makeUnitSprite(ac2,hc2,C_WEAPON_METAL,g_newDraft.hasShield,g_newDraft.isPolearm,g_newDraft.isCav,g_newDraft.horseCol);
+                draftPreviewTex=imgToTex(di2);
             }
         }
-        cy+=36;
+        cy+=32;
 
-        // Sliders stats del draft
-        float sw2=280;
-        DrawText("Estadisticas:",(int)cx,(int)cy,14,{100,200,100,255}); cy+=18;
-        float spd2=g_newTypeDraft.speed;
-        spd2=drawSlider({cx,cy,sw2,16},spd2,20,400,"Velocidad","%.0f",mouse,{60,180,220,200});
-        if(spd2!=g_newTypeDraft.speed){ g_newTypeDraft.speed=spd2; if(draftTex.id>0)UnloadTexture(draftTex); draftTex=makeDraftPreview(g_newTypeDraft); }
-        cy+=38;
-        float hp2=g_newTypeDraft.hp;
-        hp2=drawSlider({cx,cy,sw2,16},hp2,20,600,"Vida (HP)","%.0f",mouse,{60,220,60,200});
-        g_newTypeDraft.hp=hp2; cy+=38;
-        float dmg2=g_newTypeDraft.damage;
-        dmg2=drawSlider({cx,cy,sw2,16},dmg2,5,200,"Daño","%.0f",mouse,{220,160,40,200});
-        g_newTypeDraft.damage=dmg2; cy+=38;
-        float rng2=g_newTypeDraft.attackRange;
-        rng2=drawSlider({cx,cy,sw2,16},rng2,40,400,"Rango","%.0f",mouse,{200,200,80,200});
-        g_newTypeDraft.attackRange=rng2; cy+=38;
-        float cd2=g_newTypeDraft.attackCooldown;
-        cd2=drawSlider({cx,cy,sw2,16},cd2,0.2f,5.0f,"Cadencia","%.2f",mouse,{180,80,80,200});
-        g_newTypeDraft.attackCooldown=cd2; cy+=38;
-
-        // Color draft
-        float nr2=(float)g_newTypeDraft.r;
-        nr2=drawSlider({cx+16,cy,sw2,14},nr2,0,255,"Color R","%.0f",mouse,{220,60,60,200});
-        DrawRectangle((int)cx,(int)cy,12,14,{(unsigned char)nr2,0,0,255});
-        g_newTypeDraft.r=(unsigned char)nr2; cy+=30;
-        float ng2=(float)g_newTypeDraft.g;
-        ng2=drawSlider({cx+16,cy,sw2,14},ng2,0,255,"Color G","%.0f",mouse,{60,220,60,200});
-        DrawRectangle((int)cx,(int)cy,12,14,{0,(unsigned char)ng2,0,255});
-        g_newTypeDraft.g=(unsigned char)ng2; cy+=30;
-        float nb2=(float)g_newTypeDraft.b;
-        nb2=drawSlider({cx+16,cy,sw2,14},nb2,0,255,"Color B","%.0f",mouse,{60,60,220,200});
-        DrawRectangle((int)cx,(int)cy,12,14,{0,0,(unsigned char)nb2,255});
-        g_newTypeDraft.b=(unsigned char)nb2; cy+=30;
-
-        // Preview del draft (derecha del diálogo)
-        static float dAngle=0; dAngle+=50.0f*GetFrameTime();
-        if(draftTex.id>0){
-            Vector2 dc={dx+dw-160, dy+200};
-            drawSprite(draftTex,dc,dAngle,8.0f,{g_newTypeDraft.r,g_newTypeDraft.g,g_newTypeDraft.b,255});
-            DrawCircleLines((int)dc.x,(int)dc.y,52,{80,140,220,80});
+        // Sliders
+        float sw2=250;
+        auto ds=[&](float& val,float lo,float hi,const char* lbl,const char* fmt,Color fc){
+            float nv=drawSlider({cx,cy,sw2,15},val,lo,hi,lbl,fmt,mouse,fc);
+            bool ch=(nv!=val); if(ch){val=nv;
+                if(draftPreviewTex.id>0) UnloadTexture(draftPreviewTex);
+                Color ac2={g_newDraft.r,g_newDraft.g,g_newDraft.b,255};
+                Color hc2={g_newDraft.hr,g_newDraft.hg,g_newDraft.hb,255};
+                Image di2 = g_newDraft.range>0&&g_newDraft.role==ROLE_RANGED ?
+                    makeRangedSprite(ac2,hc2,g_newDraft.isCrossbow) :
+                    makeUnitSprite(ac2,hc2,C_WEAPON_METAL,g_newDraft.hasShield,g_newDraft.isPolearm,g_newDraft.isCav,g_newDraft.horseCol);
+                draftPreviewTex=imgToTex(di2);}
+            cy+=32;
+        };
+        ds(g_newDraft.healthPerEntity,10,200,"HP/Entity","%.0f",{60,200,60,200});
+        ds(g_newDraft.armour,0,100,"Armour","%.0f",{180,180,80,200});
+        ds(g_newDraft.speed,30,300,"Speed","%.0f",{80,160,220,200});
+        {float v=(float)g_newDraft.meleeAttack;
+         float nv=drawSlider({cx,cy,sw2,15},v,1,60,"Melee Attack","%.0f",mouse,{220,160,60,200});
+         if(nv!=v) g_newDraft.meleeAttack=(int)nv; cy+=32;}
+        ds(g_newDraft.meleeBaseDmg,1,80,"Melee Base Dmg","%.0f",{200,130,50,200});
+        ds(g_newDraft.meleeAPDmg,0,50,"Melee AP Dmg","%.0f",{180,100,50,200});
+        if(g_newDraft.range>0){
+            ds(g_newDraft.range,50,400,"Range","%.0f",{140,200,120,200});
+            ds(g_newDraft.missileBaseDmg,1,80,"Missile Base Dmg","%.0f",{180,220,80,200});
+            ds(g_newDraft.missileReloadTime,0.5f,6,"Reload Time","%.2f",{200,160,60,200});
         }
 
-        // Botones confirmar/cancelar
-        bool nameOk=(strlen(g_newTypeDraft.name)>0);
-        Color confCN=nameOk?Color{20,70,20,255}:Color{30,30,30,255};
-        Color confCH=nameOk?Color{40,130,40,255}:Color{30,30,30,255};
-        if(drawButton({dx+20,dy+dh-50,200,38},"CREAR UNIDAD",mouse,confCN,confCH)&&nameOk){
-            g_newTypeDraft.isBuiltin=false;
-            g_unitTypes.push_back(g_newTypeDraft);
-            int newIdx=(int)g_unitTypes.size()-1;
-            rebuildTexture(newIdx);
-            g_editTypeIdx=newIdx;
+        // Draft preview sprite
+        static float draftAngle=0; draftAngle+=40*GetFrameTime();
+        if(draftPreviewTex.id>0){
+            Vector2 dc={dx+dw-140,dy+200};
+            drawSprite(draftPreviewTex,dc,draftAngle,9.0f,WHITE);
+            DrawCircleLines((int)dc.x,(int)dc.y,55,{120,95,45,80});
+        }
+
+        bool nameOk=strlen(g_newDraft.name)>0;
+        Color cc=nameOk?Color{25,18,8,255}:Color{25,20,15,255};
+        Color ch2=nameOk?Color{55,42,18,255}:Color{25,20,15,255};
+        if(drawButton({dx+20,dy+dh-52,200,40},"CREATE UNIT",mouse,cc,ch2)&&nameOk){
+            g_newDraft.isBuiltin=false;
+            g_newDraft.numEntities=std::max(8,g_newDraft.numEntities);
+            g_unitTypes.push_back(g_newDraft);
+            int ni=(int)g_unitTypes.size()-1;
+            rebuildTexture(ni);
+            g_editTypeIdx=ni;
+            g_creatingNew=false; g_editorTexDirty=true;
+            if(draftPreviewTex.id>0){UnloadTexture(draftPreviewTex);draftPreviewTex={0};}
+            rebuildEditorPreview();
+        }
+        if(drawButton({dx+240,dy+dh-52,140,40},"CANCEL",mouse,{50,22,10,255},{90,38,18,255})){
             g_creatingNew=false;
-            g_editTexDirty=true;
-            if(draftTex.id>0){ UnloadTexture(draftTex); draftTex={0}; }
-            rebuildPreviewTex();
+            if(draftPreviewTex.id>0){UnloadTexture(draftPreviewTex);draftPreviewTex={0};}
         }
-        if(drawButton({dx+240,dy+dh-50,160,38},"CANCELAR",mouse,{60,25,25,255},{110,45,45,255})){
-            g_creatingNew=false;
-            if(draftTex.id>0){ UnloadTexture(draftTex); draftTex={0}; }
-        }
-
     } else {
-        // Botón "Nuevo tipo" — en panel izquierdo abajo
-        int btnY=SCREEN_H-48;
-        if(drawButton({10,(float)btnY,200,36},"+ NUEVA UNIDAD",mouse,{20,50,80,255},{40,90,150,255})){
-            memset(&g_newTypeDraft,0,sizeof(g_newTypeDraft));
-            strcpy(g_newTypeDraft.name,"NuevoTipo");
-            g_newTypeDraft.speed=120; g_newTypeDraft.hp=100;
-            g_newTypeDraft.damage=30; g_newTypeDraft.attackRange=120;
-            g_newTypeDraft.attackCooldown=1.0f;
-            g_newTypeDraft.r=200; g_newTypeDraft.g=80; g_newTypeDraft.b=200;
-            g_newTypeDraft.spriteBase=SPR_TANK;
-            g_newTypeDraft.isBuiltin=false;
-            g_creatingNew=true;
-            g_nameEditActive=1;
-            if(draftTex.id>0){ UnloadTexture(draftTex); draftTex={0}; }
-            draftTex=makeDraftPreview(g_newTypeDraft);
+        int btnY=SCREEN_H-46;
+        if(drawButton({8,(float)btnY,180,34},"+ NEW UNIT",mouse,{20,40,60,255},{35,70,110,255})){
+            memset(&g_newDraft,0,sizeof(g_newDraft));
+            strcpy(g_newDraft.name,"New Unit");
+            g_newDraft.numEntities=40; g_newDraft.cost=200;
+            g_newDraft.healthPerEntity=50; g_newDraft.armour=10; g_newDraft.speed=100;
+            g_newDraft.meleeAttack=20; g_newDraft.meleeAttackInterval=1.2f; g_newDraft.meleeDefense=15;
+            g_newDraft.meleeBaseDmg=12; g_newDraft.meleeAPDmg=4;
+            g_newDraft.r=180; g_newDraft.g=140; g_newDraft.b=80;
+            g_newDraft.hr=160; g_newDraft.hg=130; g_newDraft.hb=70;
+            g_newDraft.hasShield=true; g_newDraft.isPolearm=false; g_newDraft.isCav=false;
+            g_newDraft.horseCol={120,80,45,255};
+            g_creatingNew=true; g_nameEditActive=1;
         }
-        if(drawButton({220,(float)btnY,160,36},"VOLVER",mouse,{40,25,25,255},{80,40,40,255}))
+        if(drawButton({196,(float)btnY,130,34},"BACK",mouse,{45,25,12,255},{80,40,20,255}))
             return STATE_MENU;
     }
 
@@ -864,226 +993,476 @@ GameState updateDrawUnitEditor(Vector2 mouse){
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  INICIALIZAR PARTIDA
+//  GAME INIT
 // ═══════════════════════════════════════════════════════════════
-void initGame(std::vector<Unit>& units,std::vector<Enemy>& enemies,
-              std::vector<Bullet>& bullets, const BattleConfig& cfg){
-    units.clear(); enemies.clear(); bullets.clear();
+static std::vector<BattleUnit> g_units;
+static std::vector<Projectile> g_projectiles;
 
-    float startX=60, startY=260, cx=startX;
+void spawnEntities(BattleUnit& bu){
+    const UnitTypeDef& td=g_unitTypes[bu.typeIdx];
+    bu.entities.clear();
+    int n=td.numEntities;
+    // Arrange in a grid formation
+    int cols=std::max(1,(int)sqrtf((float)n));
+    int rows=(n+cols-1)/cols;
+    float spacing=td.isCav?40.0f:22.0f;
+    float totalW=(cols-1)*spacing, totalH=(rows-1)*spacing;
+    for(int i=0;i<n;i++){
+        int c=i%cols, r=i/cols;
+        Entity e;
+        e.pos={bu.pos.x+(c-cols/2)*spacing-totalW*0.5f+(float)rand()/RAND_MAX*4-2,
+               bu.pos.y+(r-rows/2)*spacing-totalH*0.5f+(float)rand()/RAND_MAX*4-2};
+        e.hp=td.healthPerEntity;
+        e.alive=true;
+        bu.entities.push_back(e);
+    }
+}
+
+void initGame(const BattleConfig& cfg){
+    g_units.clear(); g_projectiles.clear();
+
+    // Player units — left side
+    float px=80, py=100;
     for(int t=0;t<unitTypeCount();t++){
-        if(t>=(int)cfg.playerCounts.size()) break;
-        int cnt=cfg.playerCounts[t];
+        int cnt=t<(int)cfg.playerCounts.size()?cfg.playerCounts[t]:0;
         if(cnt==0) continue;
-        const UnitTypeDef& td=g_unitTypes[t];
         for(int i=0;i<cnt;i++){
-            int col=i%3, row=i/3;
-            Unit u;
-            u.pos={cx+col*36.0f, startY+row*38.0f};
-            u.target=u.pos;
-            u.hp=u.maxHp       = td.hp;
-            u.damage           = td.damage;
-            u.speed            = td.speed;
-            u.attackRange      = td.attackRange;
-            u.attackCooldown   = td.attackCooldown;
-            u.selected=u.moving=false; u.alive=true;
-            u.angle=0; u.angleTarget=0; u.attackTimer=0;
-            u.bodyColor={td.r,td.g,td.b,255};
-            u.typeIdx=t;
-            units.push_back(u);
+            BattleUnit bu={};
+            bu.typeIdx=t; bu.isPlayer=true; bu.selected=false;
+            const UnitTypeDef& td=g_unitTypes[t];
+            bu.pos={px, py};
+            bu.target=bu.pos;
+            bu.angle=90; bu.angleTarget=90;
+            bu.moving=false; bu.targetUnitIdx=-1; bu.forceAttack=false;
+            bu.missileReloadTimer=0; bu.meleeAttackTimer=0;
+            spawnEntities(bu);
+            g_units.push_back(bu);
+            py+=td.isCav?90:60;
+            if(py>SCREEN_H-80){ py=100; px+=100; }
         }
-        cx+=130;
     }
 
-    float ex=SCREEN_W-70, ey=200, ecx=ex;
+    // Enemy units — right side
+    float ex=SCREEN_W-100, ey=100;
     for(int t=0;t<unitTypeCount();t++){
-        if(t>=(int)cfg.enemyCounts.size()) break;
-        int cnt=cfg.enemyCounts[t];
+        int cnt=t<(int)cfg.enemyCounts.size()?cfg.enemyCounts[t]:0;
         if(cnt==0) continue;
-        const UnitTypeDef& td=g_unitTypes[t];
         for(int i=0;i<cnt;i++){
-            int col=i%3, row=i/3;
-            Enemy e;
-            e.pos={ecx-col*36.0f, ey+row*38.0f};
-            e.hp=e.maxHp = td.hp    * cfg.difficulty;
-            e.speed      = td.speed * cfg.difficulty;
-            e.alive=true; e.attackTimer=0; e.angle=180.0f;
-            e.typeIdx=t;
-            enemies.push_back(e);
+            BattleUnit bu={};
+            bu.typeIdx=t; bu.isPlayer=false; bu.selected=false;
+            const UnitTypeDef& td=g_unitTypes[t];
+            bu.pos={ex, ey};
+            bu.target=bu.pos;
+            bu.angle=270; bu.angleTarget=270;
+            bu.moving=false; bu.targetUnitIdx=-1; bu.forceAttack=false;
+            bu.missileReloadTimer=0; bu.meleeAttackTimer=0;
+
+            // Scale enemy stats by difficulty
+            // We'll apply difficulty at the entity HP level
+            auto& tdm=g_unitTypes[t]; // can't modify, use multiplier on the unit
+
+            spawnEntities(bu);
+            // Apply difficulty to entity HP
+            for(auto& e:bu.entities) e.hp*=cfg.difficulty;
+            bu.entities[0].hp*=1; // reset first one (done above already)
+            // Actually set maxHP tracking via entity max
+            ey+=td.isCav?90:60;
+            if(ey>SCREEN_H-80){ ey=100; ex-=100; }
+            g_units.push_back(bu);
         }
-        ecx-=130;
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PARTIDA
+//  HIT CHANCE
 // ═══════════════════════════════════════════════════════════════
-GameState updateDrawGame(std::vector<Unit>& units,std::vector<Enemy>& enemies,
-                         std::vector<Bullet>& bullets,
-                         const BattleConfig& cfg,
-                         Vector2 mouse,float dt){
+float calcHitChance(int attMelee, int defMelee){
+    float hc = 0.35f + (attMelee - defMelee)*0.01f;
+    if(hc < 0.10f) hc=0.10f;
+    if(hc > 0.90f) hc=0.90f;
+    return hc;
+}
 
-    static Vector2   selStart={0,0};
-    static bool      dragging=false;
+// Calc armor reduction for non-AP damage
+float calcArmorReduction(float armour){
+    float maxRed=armour/100.0f;
+    float minRed=maxRed*0.5f;
+    return frandRange(minRed,maxRed);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  BATTLE UPDATE + DRAW
+// ═══════════════════════════════════════════════════════════════
+GameState updateDrawGame(const BattleConfig& cfg, Vector2 mouse, float dt){
+
+    static Vector2 selStart={0,0};
+    static bool dragging=false;
     static Rectangle selRect={0,0,0,0};
 
-    bool menuPressed=drawButton({(float)(SCREEN_W-130),6,120,30},"MENU",mouse,
-                                {30,50,30,220},{60,110,60,255});
+    // UI buttons (always on top)
+    bool menuPressed=drawButton({(float)(SCREEN_W-120),6,112,30},"MENU",mouse,
+                                {30,22,8,220},{65,50,20,255});
     if(menuPressed||IsKeyPressed(KEY_ESCAPE)) return STATE_MENU;
-    bool overMenuBtn=btnHover({(float)(SCREEN_W-130),6,120,30},mouse);
+    bool overMenuBtn=btnHover({(float)(SCREEN_W-120),6,112,30},mouse);
 
+    // ── Selection & orders ──────────────────────────────────
     if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)&&!overMenuBtn){
         selStart=mouse; dragging=true;
-        for(auto& u:units) u.selected=false;
+        for(auto& u:g_units) if(u.isPlayer) u.selected=false;
     }
     if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)&&dragging){
-        selRect.x=fminf(mouse.x,selStart.x); selRect.y=fminf(mouse.y,selStart.y);
-        selRect.width=fabsf(mouse.x-selStart.x); selRect.height=fabsf(mouse.y-selStart.y);
+        selRect.x=fminf(mouse.x,selStart.x);
+        selRect.y=fminf(mouse.y,selStart.y);
+        selRect.width=fabsf(mouse.x-selStart.x);
+        selRect.height=fabsf(mouse.y-selStart.y);
     }
     if(IsMouseButtonReleased(MOUSE_LEFT_BUTTON)){
         dragging=false;
-        if(selRect.width<5&&selRect.height<5){
+        if(selRect.width<6&&selRect.height<6){
+            // Try to select a player unit
             float best=9999; int idx=-1;
-            for(int i=0;i<(int)units.size();i++){
-                if(!units[i].alive) continue;
-                float d=vdist(mouse,units[i].pos);
-                if(d<best&&d<22){best=d;idx=i;}
+            for(int i=0;i<(int)g_units.size();i++){
+                if(!g_units[i].isPlayer) continue;
+                if(g_units[i].entities.empty()) continue;
+                // count alive
+                int alive=0; for(auto& e:g_units[i].entities) if(e.alive) alive++;
+                if(alive==0) continue;
+                float d=vdist(mouse,g_units[i].pos);
+                if(d<best&&d<50){best=d;idx=i;}
             }
-            if(idx>=0) units[idx].selected=true;
+            if(idx>=0) g_units[idx].selected=true;
         } else {
-            for(auto& u:units)
-                if(u.alive&&CheckCollisionPointRec(u.pos,selRect)) u.selected=true;
+            for(auto& u:g_units){
+                if(!u.isPlayer) continue;
+                int alive=0; for(auto& e:u.entities) if(e.alive) alive++;
+                if(alive==0) continue;
+                if(CheckCollisionPointRec(u.pos,selRect)) u.selected=true;
+            }
         }
         selRect={0,0,0,0};
     }
+
     if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
-        int idx=0;
-        for(auto& u:units){
-            if(!u.selected) continue;
-            u.target={mouse.x+(idx%3-1)*32.0f, mouse.y+(idx/3-1)*32.0f};
-            u.moving=true; idx++;
+        // Check if clicking on an enemy unit → attack order
+        int clickedEnemy=-1;
+        float bestD=9999;
+        for(int i=0;i<(int)g_units.size();i++){
+            if(g_units[i].isPlayer) continue;
+            int alive=0; for(auto& e:g_units[i].entities) if(e.alive) alive++;
+            if(alive==0) continue;
+            float d=vdist(mouse,g_units[i].pos);
+            if(d<50&&d<bestD){bestD=d;clickedEnemy=i;}
+        }
+
+        int orderIdx=0;
+        for(auto& u:g_units){
+            if(!u.isPlayer||!u.selected) continue;
+            if(clickedEnemy>=0){
+                u.targetUnitIdx=clickedEnemy;
+                u.forceAttack=true;
+                u.moving=true;
+            } else {
+                u.targetUnitIdx=-1; u.forceAttack=false;
+                u.target={mouse.x+(orderIdx%3-1)*55.0f, mouse.y+(orderIdx/3)*55.0f};
+                u.moving=true;
+            }
+            orderIdx++;
         }
     }
 
-    // ── Lógica unidades ──────────────────────────────────────
-    for(auto& u:units){
-        if(!u.alive) continue;
-        u.attackTimer-=dt;
-        if(u.moving){
-            float d=vdist(u.pos,u.target);
-            if(d<3.0f) u.moving=false;
-            else{
-                Vector2 dir=vnorm({u.target.x-u.pos.x,u.target.y-u.pos.y});
-                u.pos.x+=dir.x*u.speed*dt; u.pos.y+=dir.y*u.speed*dt;
-                u.angleTarget=dirToAngle(dir);
-            }
+    // ── UNIT LOGIC ───────────────────────────────────────────
+    int numUnits=(int)g_units.size();
+    for(int ui=0;ui<numUnits;ui++){
+        BattleUnit& u=g_units[ui];
+        int aliveCount=0;
+        for(auto& e:u.entities) if(e.alive) aliveCount++;
+        if(aliveCount==0) continue;
+
+        const UnitTypeDef& td=g_unitTypes[u.typeIdx];
+
+        u.meleeAttackTimer=fmaxf(0,u.meleeAttackTimer-dt);
+        u.missileReloadTimer=fmaxf(0,u.missileReloadTimer-dt);
+
+        // Find closest enemy
+        int closestEnemy=-1; float closestDist=9999;
+        for(int j=0;j<numUnits;j++){
+            if(g_units[j].isPlayer==u.isPlayer) continue;
+            int ae=0; for(auto& e:g_units[j].entities) if(e.alive) ae++;
+            if(ae==0) continue;
+            float d=vdist(u.pos,g_units[j].pos);
+            if(d<closestDist){closestDist=d;closestEnemy=j;}
         }
-        Enemy* best=nullptr; float bestD=9999;
-        for(auto& e:enemies){
-            if(!e.alive) continue;
-            float d=vdist(u.pos,e.pos);
-            if(d<u.attackRange+20&&d<bestD){bestD=d;best=&e;}
+
+        // Auto-target if no forced target
+        if(u.targetUnitIdx>=0){
+            int ae=0; for(auto& e:g_units[u.targetUnitIdx].entities) if(e.alive) ae++;
+            if(ae==0){u.targetUnitIdx=-1; u.forceAttack=false;}
         }
-        if(best){
-            Vector2 dir=vnorm({best->pos.x-u.pos.x,best->pos.y-u.pos.y});
+        if(u.targetUnitIdx<0&&closestEnemy>=0) u.targetUnitIdx=closestEnemy;
+
+        bool hasTarget=(u.targetUnitIdx>=0);
+        float distToTarget=hasTarget?vdist(u.pos,g_units[u.targetUnitIdx].pos):9999;
+
+        // Determine engagement range
+        float engageRange = td.range>0 ? td.range : td.isCav ? 70.0f : 45.0f;
+        float meleeRange  = td.isCav   ? 70.0f : 45.0f;
+
+        // Move toward target or position
+        Vector2 moveTarget=u.target;
+        if(hasTarget && (u.forceAttack||distToTarget<engageRange+200)){
+            moveTarget=g_units[u.targetUnitIdx].pos;
+        }
+
+        float distToMove=vdist(u.pos,moveTarget);
+        bool shouldMove = u.moving && distToMove > (hasTarget&&td.range>0 ? engageRange*0.8f : 12.0f);
+        // Stop approaching melee target when in range
+        if(hasTarget && td.range==0 && distToTarget<meleeRange) shouldMove=false;
+        if(hasTarget && td.range>0  && distToTarget<engageRange*0.9f) shouldMove=false;
+
+        if(shouldMove){
+            Vector2 dir=vnorm({moveTarget.x-u.pos.x,moveTarget.y-u.pos.y});
+            float moveSpeed=td.speed;
+            u.pos.x+=dir.x*moveSpeed*dt;
+            u.pos.y+=dir.y*moveSpeed*dt;
             u.angleTarget=dirToAngle(dir);
-            if(u.attackTimer<=0){
-                bullets.push_back({u.pos,{dir.x*320,dir.y*320},u.damage,true,true});
-                u.attackTimer=u.attackCooldown;
+            // Move entities with unit
+            for(auto& e:u.entities){
+                e.pos.x+=dir.x*moveSpeed*dt;
+                e.pos.y+=dir.y*moveSpeed*dt;
+            }
+        } else if(!shouldMove && distToMove<12) {
+            u.moving=false;
+        }
+
+        if(hasTarget){
+            Vector2 dir=vnorm({g_units[u.targetUnitIdx].pos.x-u.pos.x,
+                               g_units[u.targetUnitIdx].pos.y-u.pos.y});
+            u.angleTarget=dirToAngle(dir);
+        }
+
+        u.angle=lerpAngle(u.angle,u.angleTarget,8.0f*dt);
+
+        // RANGED ATTACK
+        if(hasTarget && td.range>0 && distToTarget<=td.range && u.missileReloadTimer<=0){
+            // Find alive enemy entity
+            BattleUnit& tgtUnit=g_units[u.targetUnitIdx];
+            Entity* tgtEnt=nullptr;
+            for(auto& e:tgtUnit.entities) if(e.alive){tgtEnt=&e;break;}
+            if(tgtEnt){
+                Vector2 dir=vnorm({tgtEnt->pos.x-u.pos.x,tgtEnt->pos.y-u.pos.y});
+                // Shoot from a random entity
+                int shooterIdx=-1;
+                for(int k=0;k<(int)u.entities.size();k++) if(u.entities[k].alive){shooterIdx=k;break;}
+                if(shooterIdx>=0){
+                    Projectile proj;
+                    proj.pos=u.entities[shooterIdx].pos;
+                    proj.vel={dir.x*300,dir.y*300};
+                    proj.damage=td.missileBaseDmg;
+                    proj.apDamage=td.missileAPDmg;
+                    proj.alive=true; proj.fromPlayer=u.isPlayer;
+                    proj.targetUnitIdx=u.targetUnitIdx;
+                    g_projectiles.push_back(proj);
+                }
+                u.missileReloadTimer=td.missileReloadTime;
             }
         }
-        u.angle=lerpAngle(u.angle,u.angleTarget,12.0f*dt);
-    }
 
-    // ── Lógica enemigos ──────────────────────────────────────
-    for(auto& e:enemies){
-        if(!e.alive) continue;
-        e.attackTimer-=dt;
-        int ti=e.typeIdx;
-        if(ti>=unitTypeCount()) continue;
-        const UnitTypeDef& td=g_unitTypes[ti];
-        float eDmg=td.damage*cfg.difficulty, eCd=td.attackCooldown, eRng=td.attackRange;
-
-        Unit* tgt=nullptr; float minD=9999;
-        for(auto& u:units){if(!u.alive)continue;float d=vdist(e.pos,u.pos);if(d<minD){minD=d;tgt=&u;}}
-        if(tgt){
-            Vector2 dir=vnorm({tgt->pos.x-e.pos.x,tgt->pos.y-e.pos.y});
-            e.angle=lerpAngle(e.angle,dirToAngle(dir),8.0f*dt);
-            if(minD>40) e.pos={e.pos.x+dir.x*e.speed*dt,e.pos.y+dir.y*e.speed*dt};
-            if(minD<eRng+40&&e.attackTimer<=0){
-                bullets.push_back({e.pos,{dir.x*260,dir.y*260},eDmg,true,false});
-                e.attackTimer=eCd;
+        // MELEE ATTACK
+        if(hasTarget && distToTarget<=meleeRange+20 && u.meleeAttackTimer<=0){
+            const UnitTypeDef& atd=td;
+            BattleUnit& tgtUnit=g_units[u.targetUnitIdx];
+            const UnitTypeDef& dtd=g_unitTypes[tgtUnit.typeIdx];
+            float hitChance=calcHitChance(atd.meleeAttack,dtd.meleeDefense);
+            // Each alive attacker attacks a random alive defender
+            for(auto& attEnt:u.entities){
+                if(!attEnt.alive) continue;
+                if((float)rand()/RAND_MAX > hitChance) continue;
+                // Pick random alive defender entity
+                std::vector<Entity*> defenders;
+                for(auto& de:tgtUnit.entities) if(de.alive) defenders.push_back(&de);
+                if(defenders.empty()) break;
+                Entity* defEnt=defenders[rand()%defenders.size()];
+                // Apply damage
+                float armor=calcArmorReduction(dtd.armour);
+                float baseDmg=atd.meleeBaseDmg*(1.0f-armor);
+                float apDmg=atd.meleeAPDmg;
+                defEnt->hp-=(baseDmg+apDmg);
+                if(defEnt->hp<=0) defEnt->alive=false;
             }
+            u.meleeAttackTimer=atd.meleeAttackInterval;
+            // Update tgt unit position centroid
+            float sx=0,sy2=0; int ac=0;
+            for(auto& e:tgtUnit.entities) if(e.alive){sx+=e.pos.x;sy2+=e.pos.y;ac++;}
+            if(ac>0){tgtUnit.pos={sx/ac,sy2/ac};}
         }
+
+        // Update unit centroid position
+        float sx=0,sy2=0; int ac=0;
+        for(auto& e:u.entities) if(e.alive){sx+=e.pos.x;sy2+=e.pos.y;ac++;}
+        if(ac>0) u.pos={sx/ac,sy2/ac};
     }
 
-    // ── Balas ────────────────────────────────────────────────
-    for(auto& b:bullets){
-        if(!b.alive) continue;
-        b.pos.x+=b.vel.x*dt; b.pos.y+=b.vel.y*dt;
-        if(b.pos.x<0||b.pos.x>SCREEN_W||b.pos.y<0||b.pos.y>SCREEN_H){b.alive=false;continue;}
-        if(b.fromPlayer){
-            for(auto& e:enemies){if(!e.alive||!b.alive)continue;
-                if(vdist(b.pos,e.pos)<14){e.hp-=b.damage;b.alive=false;if(e.hp<=0)e.alive=false;break;}}
+    // ── PROJECTILE LOGIC ────────────────────────────────────
+    for(auto& proj:g_projectiles){
+        if(!proj.alive) continue;
+        proj.pos.x+=proj.vel.x*dt;
+        proj.pos.y+=proj.vel.y*dt;
+        if(proj.pos.x<0||proj.pos.x>SCREEN_W||proj.pos.y<0||proj.pos.y>SCREEN_H){proj.alive=false;continue;}
+
+        // Check hit against target unit
+        if(proj.targetUnitIdx>=0&&proj.targetUnitIdx<(int)g_units.size()){
+            BattleUnit& tgt=g_units[proj.targetUnitIdx];
+            for(auto& e:tgt.entities){
+                if(!e.alive) continue;
+                if(vdist(proj.pos,e.pos)<12){
+                    proj.alive=false;
+                    // Missile hit
+                    const UnitTypeDef& dtd=g_unitTypes[tgt.typeIdx];
+                    float armor=calcArmorReduction(dtd.armour);
+                    e.hp-=proj.damage*(1.0f-armor)+proj.apDamage;
+                    if(e.hp<=0) e.alive=false;
+                    break;
+                }
+            }
         } else {
-            for(auto& u:units){if(!u.alive||!b.alive)continue;
-                if(vdist(b.pos,u.pos)<14){u.hp-=b.damage;b.alive=false;if(u.hp<=0)u.alive=false;break;}}
+            // No specific target, hit any enemy
+            for(auto& u:g_units){
+                if(u.isPlayer==proj.fromPlayer) continue;
+                for(auto& e:u.entities){
+                    if(!e.alive) continue;
+                    if(vdist(proj.pos,e.pos)<10){
+                        proj.alive=false;
+                        const UnitTypeDef& dtd=g_unitTypes[u.typeIdx];
+                        float armor=calcArmorReduction(dtd.armour);
+                        e.hp-=proj.damage*(1.0f-armor)+proj.apDamage;
+                        if(e.hp<=0) e.alive=false;
+                        goto nextProj;
+                    }
+                }
+            }
+            nextProj:;
         }
     }
 
-    int au=0,ae=0;
-    for(auto& u:units) if(u.alive) au++;
-    for(auto& e:enemies) if(e.alive) ae++;
-
-    // ── DIBUJO ───────────────────────────────────────────────
-    ClearBackground({20,30,20,255});
-    for(int x=0;x<SCREEN_W;x+=64) DrawLine(x,0,x,SCREEN_H,{30,45,30,255});
-    for(int y=0;y<SCREEN_H;y+=64) DrawLine(0,y,SCREEN_W,y,{30,45,30,255});
-
-    for(auto& b:bullets){if(!b.alive)continue;
-        DrawCircleV(b.pos,4,b.fromPlayer?YELLOW:ORANGE);}
-
-    for(auto& u:units){
-        if(!u.alive) continue;
-        if(u.selected) DrawCircleLines((int)u.pos.x,(int)u.pos.y,26,SKYBLUE);
-        int ti=u.typeIdx;
-        if(ti>=unitTypeCount()) continue;
-        Color tint=u.selected?WHITE:Color{clampU8(u.bodyColor.r+20),
-                                          clampU8(u.bodyColor.g+20),
-                                          clampU8(u.bodyColor.b+20),255};
-        drawSprite(g_playerTextures[ti],u.pos,u.angle,1.8f,tint);
-        drawHealthBar(u.pos,u.hp,u.maxHp,28);
-    }
-    for(auto& e:enemies){
-        if(!e.alive) continue;
-        int ti=e.typeIdx;
-        if(ti>=unitTypeCount()) continue;
-        drawSprite(g_enemyTextures[ti],e.pos,e.angle,1.8f,WHITE);
-        drawHealthBar(e.pos,e.hp,e.maxHp,28);
-    }
-    if(dragging&&(selRect.width>5||selRect.height>5)){
-        DrawRectangleRec(selRect,{100,200,255,40});
-        DrawRectangleLinesEx(selRect,1,SKYBLUE);
+    // Count sides
+    int alivePlayer=0, aliveEnemy=0;
+    for(auto& u:g_units){
+        int ac=0; for(auto& e:u.entities) if(e.alive) ac++;
+        if(ac>0){
+            if(u.isPlayer) alivePlayer++;
+            else aliveEnemy++;
+        }
     }
 
-    DrawRectangle(0,0,SCREEN_W,44,{0,0,0,210});
-    DrawText(TextFormat("Unidades: %d  |  Enemigos: %d  |  Dif: %.1fx",au,ae,cfg.difficulty),12,13,16,WHITE);
-    drawButton({(float)(SCREEN_W-130),6,120,30},"MENU",mouse,{30,50,30,220},{60,110,60,255});
+    // ═══════════════ DRAW ═════════════════════════════════
+    // Ground
+    ClearBackground({30,42,22,255});
 
-    if(au==0){
-        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,170});
-        const char* go="GAME OVER";
-        DrawText(go,SCREEN_W/2-MeasureText(go,56)/2+2,SCREEN_H/2-30+2,56,{150,0,0,255});
-        DrawText(go,SCREEN_W/2-MeasureText(go,56)/2,  SCREEN_H/2-30,  56,RED);
-        if(drawButton({SCREEN_W/2-110.0f,(float)(SCREEN_H/2+40),220,44},"VOLVER AL MENU",mouse))
+    // Terrain grid
+    for(int x=0;x<SCREEN_W;x+=80) DrawLine(x,0,x,SCREEN_H,{38,52,28,255});
+    for(int y=0;y<SCREEN_H;y+=80) DrawLine(0,y,SCREEN_W,y,{38,52,28,255});
+
+    // Random grass patches
+    srand(42);
+    for(int i=0;i<60;i++){
+        int gx=rand()%SCREEN_W, gy=rand()%SCREEN_H;
+        DrawRectangle(gx,gy,4+rand()%8,2+rand()%4,{28+rand()%14,48+rand()%14,18+rand()%8,180});
+    }
+    srand((unsigned)time(nullptr)); // reset random
+
+    // Draw projectiles
+    for(auto& proj:g_projectiles){
+        if(!proj.alive) continue;
+        Color pc=proj.fromPlayer?Color{220,200,100,255}:Color{220,100,80,255};
+        DrawCircleV(proj.pos,3,pc);
+        DrawCircleV(proj.pos,2,WHITE);
+    }
+
+    // Draw units
+    for(int ui=0;ui<(int)g_units.size();ui++){
+        BattleUnit& u=g_units[ui];
+        const UnitTypeDef& td=g_unitTypes[u.typeIdx];
+        Texture2D& tex=u.isPlayer?g_playerTex[u.typeIdx]:g_enemyTex[u.typeIdx];
+
+        int aliveCount=0;
+        float totalMaxHp=td.healthPerEntity*(float)td.numEntities;
+        float totalHp=0;
+        for(auto& e:u.entities){if(e.alive){aliveCount++;totalHp+=e.hp;}}
+        if(aliveCount==0) continue;
+
+        // Draw selection ring
+        if(u.selected&&u.isPlayer){
+            DrawCircleLines((int)u.pos.x,(int)u.pos.y,td.isCav?55:38,{220,200,80,200});
+        }
+
+        // Draw target line for selected
+        if(u.selected&&u.isPlayer&&(u.moving||u.targetUnitIdx>=0)){
+            Vector2 tgt=u.targetUnitIdx>=0?g_units[u.targetUnitIdx].pos:u.target;
+            DrawLineBezier(u.pos,tgt,2.0f,{180,160,60,120});
+            DrawCircleLines((int)tgt.x,(int)tgt.y,8,{180,160,60,180});
+        }
+
+        // Draw individual entities
+        float scale=td.isCav?2.0f:1.6f;
+        for(auto& e:u.entities){
+            if(!e.alive) continue;
+            drawSprite(tex,e.pos,u.angle,scale,WHITE);
+        }
+
+        // Formation outline (bounding box)
+        if(u.selected&&u.isPlayer)
+            DrawRectangleLinesEx({u.pos.x-30,u.pos.y-20,60,40},1,{180,160,60,100});
+
+        // Health bar above centroid
+        drawHealthBar(u.pos,totalHp,totalMaxHp*(float)aliveCount/(float)td.numEntities+1,40);
+
+        // Entity count
+        DrawText(TextFormat("%d/%d",aliveCount,td.numEntities),
+                 (int)(u.pos.x-12),(int)(u.pos.y-32),11,u.isPlayer?Color{140,200,255,220}:Color{255,160,140,220});
+    }
+
+    // Selection box
+    if(dragging&&(selRect.width>6||selRect.height>6)){
+        DrawRectangleRec(selRect,{180,160,60,30});
+        DrawRectangleLinesEx(selRect,1,{220,200,100,200});
+    }
+
+    // ── HUD ────────────────────────────────────────────────
+    DrawRectangle(0,0,SCREEN_W,44,{5,4,2,230});
+    DrawRectangleLinesEx({0,44,(float)SCREEN_W,1},1,{120,95,45,150});
+
+    // Count total entities
+    int playerEntities=0, enemyEntities=0;
+    for(auto& u:g_units){
+        int ac=0; for(auto& e:u.entities) if(e.alive) ac++;
+        if(u.isPlayer) playerEntities+=ac; else enemyEntities+=ac;
+    }
+
+    DrawText(TextFormat("YOUR FORCES: %d units (%d men)",alivePlayer,playerEntities),12,14,15,{140,200,140,255});
+    DrawText(TextFormat("ENEMY FORCES: %d units (%d men)",aliveEnemy,enemyEntities),
+             SCREEN_W/2-100,14,15,{200,140,140,255});
+    drawButton({(float)(SCREEN_W-120),6,112,30},"MENU",mouse,{30,22,8,220},{65,50,20,255});
+
+    // ── VICTORY / DEFEAT ───────────────────────────────────
+    if(alivePlayer==0&&aliveEnemy==0){
+        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,160});
+        const char* msg="BATTLE ENDED";
+        DrawText(msg,SCREEN_W/2-MeasureText(msg,52)/2,SCREEN_H/2-40,52,{180,160,80,255});
+        if(drawButton({SCREEN_W/2-130.0f,(float)(SCREEN_H/2+30),260,50},"RETURN TO MENU",mouse))
             return STATE_MENU;
-    }
-    if(ae==0&&au>0){
-        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,150});
-        const char* win="VICTORIA!";
-        DrawText(win,SCREEN_W/2-MeasureText(win,56)/2+2,SCREEN_H/2-30+2,56,{0,120,0,255});
-        DrawText(win,SCREEN_W/2-MeasureText(win,56)/2,  SCREEN_H/2-30,  56,GREEN);
-        if(drawButton({SCREEN_W/2-110.0f,(float)(SCREEN_H/2+40),220,44},"VOLVER AL MENU",mouse))
+    } else if(alivePlayer==0){
+        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,160});
+        const char* msg="DEFEAT";
+        DrawText(msg,SCREEN_W/2-MeasureText(msg,60)/2+2,SCREEN_H/2-40+2,60,{120,0,0,255});
+        DrawText(msg,SCREEN_W/2-MeasureText(msg,60)/2,  SCREEN_H/2-40,  60,{220,50,50,255});
+        if(drawButton({SCREEN_W/2-130.0f,(float)(SCREEN_H/2+30),260,50},"RETURN TO MENU",mouse))
+            return STATE_MENU;
+    } else if(aliveEnemy==0){
+        DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,120});
+        const char* msg="VICTORY!";
+        DrawText(msg,SCREEN_W/2-MeasureText(msg,60)/2+2,SCREEN_H/2-40+2,60,{0,100,0,255});
+        DrawText(msg,SCREEN_W/2-MeasureText(msg,60)/2,  SCREEN_H/2-40,  60,{80,220,80,255});
+        if(drawButton({SCREEN_W/2-130.0f,(float)(SCREEN_H/2+30),260,50},"RETURN TO MENU",mouse))
             return STATE_MENU;
     }
 
@@ -1094,19 +1473,15 @@ GameState updateDrawGame(std::vector<Unit>& units,std::vector<Enemy>& enemies,
 //  MAIN
 // ═══════════════════════════════════════════════════════════════
 int main(){
-    InitWindow(SCREEN_W,SCREEN_H,"RTS Pixel War");
+    InitWindow(SCREEN_W,SCREEN_H,"Medieval Warfare");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
 
     initBuiltinTypes();
-    rebuildPreviewTex();
+    rebuildEditorPreview();
 
     GameState    state=STATE_MENU;
     BattleConfig cfg  =defaultBattleConfig();
-
-    std::vector<Unit>   units;
-    std::vector<Enemy>  enemies;
-    std::vector<Bullet> bullets;
     float menuTime=0;
 
     while(!WindowShouldClose()){
@@ -1115,7 +1490,7 @@ int main(){
         SCREEN_W=GetScreenWidth();
         SCREEN_H=GetScreenHeight();
 
-        float dt=GetFrameTime();
+        float dt=fminf(GetFrameTime(),0.05f);
         menuTime+=dt;
         Vector2 mouse=GetMousePosition();
         BeginDrawing();
@@ -1123,13 +1498,10 @@ int main(){
         switch(state){
             case STATE_MENU:{
                 GameState nxt=updateDrawMenu(mouse,menuTime);
-                float bx=SCREEN_W/2-155.0f;
-                if(btnHover({bx,474,310,52},mouse)&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
+                // Handle EXIT button manually
+                float bx=SCREEN_W/2-170.0f;
+                if(btnHover({bx,400,340,56},mouse)&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
                     goto quit;
-                if(nxt==STATE_PLAYING){
-                    cfg=defaultBattleConfig();
-                    initGame(units,enemies,bullets,cfg);
-                }
                 if(nxt!=STATE_MENU) state=nxt;
                 break;
             }
@@ -1137,7 +1509,7 @@ int main(){
                 GameState nxt=updateDrawCustomBattle(cfg,mouse);
                 if(nxt==STATE_PLAYING){
                     resizeBattleConfig(cfg);
-                    initGame(units,enemies,bullets,cfg);
+                    initGame(cfg);
                     state=STATE_PLAYING;
                 } else state=nxt;
                 break;
@@ -1147,16 +1519,18 @@ int main(){
                 break;
             }
             case STATE_PLAYING:{
-                state=updateDrawGame(units,enemies,bullets,cfg,mouse,dt);
+                state=updateDrawGame(cfg,mouse,dt);
+                if(state==STATE_MENU){
+                    g_units.clear(); g_projectiles.clear();
+                }
                 break;
             }
         }
         EndDrawing();
     }
     quit:
-    // Limpiar texturas dinámicas
-    for(auto& t:g_playerTextures) UnloadTexture(t);
-    for(auto& t:g_enemyTextures)  UnloadTexture(t);
+    for(auto& t:g_playerTex) UnloadTexture(t);
+    for(auto& t:g_enemyTex)  UnloadTexture(t);
     if(g_previewTex.id>0) UnloadTexture(g_previewTex);
     CloseWindow();
     return 0;
