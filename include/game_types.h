@@ -119,7 +119,14 @@ struct Province {
     bool       hasCity;
     City       city;
     std::vector<int> adjacent;
+    // Primary stationed army (used for enemies and legacy)
     std::vector<std::pair<int,int>> army;
+    // Multiple garrison armies for player-controlled cities (each is vector of <type,cnt>)
+    std::vector<std::vector<std::pair<int,int>>> garrisonArmies;
+    // Movement/order info: when an army is moving from this province
+    int movingTo;
+    int moveTurnsRemaining;
+    std::vector<std::pair<int,int>> movingArmy;
 };
 
 enum SoldierState { SS_IDLE=0, SS_MOVING_SLOT, SS_MOVING_TARGET, SS_ATTACKING_MELEE, SS_ATTACKING_RANGED, SS_FLEEING };
@@ -171,6 +178,9 @@ struct CampaignState {
     int viewedCity=-1;
     std::vector<RecruitEntry> recruitQueue;
     std::vector<std::pair<int,int>> readyUnits;
+    // Pending player map move (set when player issues a move, executed over turns)
+    int pendingMoveTarget=-1;
+    int pendingMoveTurns=0;
 };
 
 struct BattleState {
