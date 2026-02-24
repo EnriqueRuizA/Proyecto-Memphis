@@ -2,3 +2,5 @@ complilacion.bat
 NOTAS.txt
 savegame.dat
 .vs/*
+.cursor/*
+.git/*
