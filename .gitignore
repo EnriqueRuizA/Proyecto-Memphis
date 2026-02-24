@@ -1,16 +1,4 @@
 complilacion.bat
 NOTAS.txt
 savegame.dat
-.vs/VSWorkspaceState.json
-.vs/slnx.sqlite
-.vs/Proyecto-Memphis/CopilotIndices/18.3.508.13148/SemanticSymbols.db
-.vs/Proyecto-Memphis/CopilotIndices/18.3.508.13148/CodeChunks.db
-.vs/Proyecto-Memphis.slnx/v18/DocumentLayout.json
-.vs/Proyecto-Memphis.slnx/v18/Browse.VC.db
-.vs/Proyecto-Memphis.slnx/v18/.wsuo
-.vs/Proyecto-Memphis.slnx/FileContentIndex/c05c204d-ddb7-4e34-bcc0-44fcc0d7f45c.vsidx
-.vs/ProjectSettings.json
-.vs/Proyecto-Memphis.slnx/FileContentIndex/d831ac38-0f4c-42b9-9946-a0fbcca73aff.vsidx
-.vs/Proyecto-Memphis.slnx/v18/Browse.VC.db-shm
-.vs/Proyecto-Memphis.slnx/v18/Browse.VC.db-wal
-.vs/Proyecto-Memphis.slnx/v18/Browse.VC.opendb
+.vs/*
