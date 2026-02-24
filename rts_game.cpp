@@ -2073,7 +2073,6 @@ static GameState updateDrawSettings(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: UNIT EDITOR (sandbox, from main menu)
 // ═══════════════════════════════════════════════════════════════════════════
-static Texture2D g_editorPrevTex={0};
 static void rebuildEditorPreview(){
     if(g_editorPrevTex.id>0) UnloadTexture(g_editorPrevTex);
     g_editorPrevTex={0};
@@ -2328,6 +2327,8 @@ static GameState updateDrawQuickBattleSetup(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: MAIN MENU
 // ═══════════════════════════════════════════════════════════════════════════
+static bool loadGame();
+
 static GameState updateDrawMainMenu(Vector2 mouse){
     ClearBackground({6,8,6,255});
     // Fog rects
