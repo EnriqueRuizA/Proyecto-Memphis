@@ -158,7 +158,7 @@ struct DeadMarker {
     bool isCavalry;
 };
 
-struct RecruitEntry { int typeIdx; int turnsLeft; };
+struct RecruitEntry { int typeIdx; int turnsLeft; int provinceIdx; int count; };
 
 struct CampaignState {
     int turn=1;

@@ -1659,6 +1659,8 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     c.constructing=-1;
                 }
             }
+
+        // Recruitment progress for this city's queued entries will be processed globally after resources
         }
         // Maintenance
         for(auto [ti,cnt]:g_campaign.readyUnits){
@@ -1671,6 +1673,31 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                 r.gold=0;
             }
             if(r.food<0) r.food=0;
+        }
+
+        // Process recruitment queue: decrement turns, move completed recruits to their city's army
+        for(int i=(int)g_campaign.recruitQueue.size()-1;i>=0;i--){
+            RecruitEntry &qe = g_campaign.recruitQueue[i];
+            qe.turnsLeft--;
+            if(qe.turnsLeft<=0){
+                if(qe.provinceIdx>=0 && qe.provinceIdx<(int)g_campaign.provinces.size()){
+                    Province &pp = g_campaign.provinces[qe.provinceIdx];
+                    // add soldiers count = unit.soldierCount * qe.count
+                    int adds = qe.count * ( (qe.typeIdx>=0 && qe.typeIdx<unitTypeCount()) ? g_unitTypes[qe.typeIdx].soldierCount : 0);
+                    if(adds>0){
+                        bool found=false;
+                        for(auto &ap : pp.army){ if(ap.first==qe.typeIdx){ ap.second+=adds; found=true; break; } }
+                        if(!found) pp.army.push_back({qe.typeIdx,adds});
+                        // If this is the player's current province, also add to readyUnits pool
+                        if(qe.provinceIdx==g_campaign.playerProvince){
+                            bool rf=false;
+                            for(auto &ru: g_campaign.readyUnits){ if(ru.first==qe.typeIdx){ ru.second+=adds; rf=true; break; } }
+                            if(!rf) g_campaign.readyUnits.push_back({qe.typeIdx,adds});
+                        }
+                    }
+                }
+                g_campaign.recruitQueue.erase(g_campaign.recruitQueue.begin()+i);
+            }
         }
         // Enemy AI: occasionally attack
         // Simple: 10% chance per enemy province to move toward player
@@ -1906,11 +1933,12 @@ static GameState updateDrawRecruitment(Vector2 mouse){
             DrawText(TextFormat("%d soldiers",td.soldierCount),(int)(leftW-150),(int)(ry+22),11,C_SECONDARY);
             bool canAfford=(res.gold>=td.recruitGold&&res.food>=td.recruitFood&&res.iron>=td.recruitIron);
             Rectangle addBtn={leftW-80,ry+6,72,26};
-            if(drawSmBtn(addBtn,"RECRUIT",mouse,
+                if(drawSmBtn(addBtn,"RECRUIT",mouse,
                          canAfford?Color{20,50,20,255}:Color{30,20,20,255},
                          canAfford?Color{40,90,38,255}:Color{30,20,20,255})&&canAfford){
                 res.gold-=td.recruitGold; res.food-=td.recruitFood; res.iron-=td.recruitIron;
-                g_campaign.recruitQueue.push_back({t,td.recruitTurns});
+                RecruitEntry e; e.typeIdx=t; e.turnsLeft=td.recruitTurns; e.provinceIdx=g_campaign.viewedCity; e.count=1;
+                g_campaign.recruitQueue.push_back(e);
             }
         } else {
             // Show requirements
@@ -2122,6 +2150,21 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         DrawRectangle((int)(lx+4),(int)(ly+4),12,12,{cur.r,cur.g,cur.b,255});
         DrawText(cur.name,(int)(lx+20),(int)(ly+4),13,WHITE);
         if(dHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_editorDropdownOpen=!g_editorDropdownOpen;
+        // New type button
+        Rectangle newBtn={(float)(lx+leftW-120),ly,110,24};
+        if(drawSmBtn(newBtn,"NEW TYPE",mouse,{30,30,60,255},{60,60,110,255})){
+            UnitTypeDef t{};
+            strncpy(t.name,"New Unit",31);
+            t.soldierCount=10; t.hpPerSoldier=10.f; t.armor=0; t.speed=80;
+            t.meleeAttack=10; t.meleeDefense=8; t.meleeBaseDmg=6.f; t.meleeAPDmg=0.f; t.meleeInterval=1.5f;
+            t.range=0; t.missileBaseDmg=0.f; t.missileAPDmg=0.f; t.missileReload=0.f;
+            t.recruitGold=100; t.recruitFood=20; t.recruitIron=0; t.recruitTurns=1;
+            t.maintGold=5; t.maintFood=2; t.morale=80.f;
+            t.r=160; t.g=160; t.b=160; t.spriteBase=SPR_INFANTRY; t.weaponHint=0; t.isBuiltin=false; t.buildingReqs=-1;
+            g_unitTypes.push_back(t);
+            g_editTypeIdx=(int)g_unitTypes.size()-1;
+            g_editorPreviewDirty=true; rebuildEditorPreview();
+        }
         if(g_editorDropdownOpen){
             float oy=ly+26;
             for(int i=0;i<unitTypeCount();i++){
@@ -2433,6 +2476,8 @@ static void saveGame(){
     for(auto& e:g_campaign.recruitQueue){
         fwrite(&e.typeIdx,sizeof(int),1,f);
         fwrite(&e.turnsLeft,sizeof(int),1,f);
+        fwrite(&e.provinceIdx,sizeof(int),1,f);
+        fwrite(&e.count,sizeof(int),1,f);
     }
 
     int na=(int)g_campaign.playerArmy.size();
@@ -2506,9 +2551,11 @@ static bool loadGame(){
     if(fread(&nq,sizeof(int),1,f)!=1||nq<0||nq>256){ fclose(f); return false; }
     g_campaign.recruitQueue.clear();
     for(int i=0;i<nq;i++){
-        int ti=0,tl=0;
+        int ti=0,tl=0,pi=0,cnt=0;
         if(fread(&ti,sizeof(int),1,f)!=1||fread(&tl,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        g_campaign.recruitQueue.push_back({ti,tl});
+        if(fread(&pi,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
+        RecruitEntry e; e.typeIdx=ti; e.turnsLeft=tl; e.provinceIdx=pi; e.count=cnt;
+        g_campaign.recruitQueue.push_back(e);
     }
 
     int na=0;
