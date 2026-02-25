@@ -1,90 +1,156 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  MEDIEVAL CONQUEST — RTS de Campaña con Batallas en Tiempo Real
-//  C++17 + Raylib. Tipos y estado global en include/ y src/globals.cpp
+//  Single-file C++17 using Raylib
+//  Compile: g++ -std=c++17 rts_game.cpp -lraylib -lm -o game
 // ═══════════════════════════════════════════════════════════════════════════
-#include "game_types.h"
-#include "game_globals.h"
+#include "raylib.h"
+#include <vector>
+#include <deque>
+#include <cmath>
+#include <string>
+#include <algorithm>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <ctime>
+#include <cassert>
 #include <functional>
 #include <random>
 
 // ───────────────────────────────────────────────────────────────────────────
-//  UNIT SPRITES & TYPES (generación procedural, texturas)
+//  SAVE FILE CONSTANTS (must be before forward declarations)
 // ───────────────────────────────────────────────────────────────────────────
+static const char* CAMPAIGN_SAVE_FILE = "campaign_save.dat";
+static const int   SAVE_VERSION       = 4;  // bumped for new fields
+
+// ───────────────────────────────────────────────────────────────────────────
+//  SCREEN / GLOBAL CONSTANTS
+// ───────────────────────────────────────────────────────────────────────────
+static int SCREEN_W = 1280;
+static int SCREEN_H = 768;
+static const int HUD_H      = 96;   // bottom HUD in battle
+static const int TOPBAR_H   = 32;   // top bar in battle
+static const int BATTLE_W   = 2560;
+static const int BATTLE_H   = 1536;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  UTILITY
+// ───────────────────────────────────────────────────────────────────────────
+static inline constexpr unsigned char clampU8(int v){ return (unsigned char)(v<0?0:(v>255?255:v)); }
+static inline float vdist(Vector2 a,Vector2 b){
+    float dx=a.x-b.x,dy=a.y-b.y; return sqrtf(dx*dx+dy*dy);
+}
+static inline Vector2 vnorm(Vector2 v){
+    float l=sqrtf(v.x*v.x+v.y*v.y);
+    if(l<0.0001f) return {0.f,0.f};
+    return {v.x/l,v.y/l};
+}
+static inline float dirToAngle(Vector2 d){ return atan2f(-d.y,d.x)*RAD2DEG; }
+static inline float lerpAngle(float c,float t,float s){
+    float d=t-c;
+    while(d>180.f)d-=360.f; while(d<-180.f)d+=360.f;
+    return c+d*s;
+}
+static inline float frand(){ return (float)rand()/(float)RAND_MAX; }
+static inline bool ptInRect(Vector2 p,Rectangle r){
+    return p.x>=r.x&&p.x<=r.x+r.width&&p.y>=r.y&&p.y<=r.y+r.height;
+}
+static inline Vector2 v2add(Vector2 a,Vector2 b){return {a.x+b.x,a.y+b.y};}
+static inline Vector2 v2sub(Vector2 a,Vector2 b){return {a.x-b.x,a.y-b.y};}
+static inline Vector2 v2scale(Vector2 a,float s){return {a.x*s,a.y*s};}
+static inline float v2dot(Vector2 a,Vector2 b){return a.x*b.x+a.y*b.y;}
+static inline float v2len(Vector2 a){return sqrtf(a.x*a.x+a.y*a.y);}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GLOBAL PALETTES
+// ───────────────────────────────────────────────────────────────────────────
+static const Color C_BG        = {14,12,10,255};
+static const Color C_GOLD      = {200,165,80,255};
+static const Color C_COPPER    = {160,80,40,255};
+static const Color C_PARCHMENT = {230,220,200,255};
+static const Color C_SECONDARY = {140,130,110,255};
+static const Color C_BLOOD     = {160,30,20,255};
+static const Color C_ALLY      = {80,160,220,255};
+static const Color C_ENEMY_COL = {220,60,50,255};
+static const Color C_TERRAIN   = {42,54,32,255};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GAME STATES
+// ───────────────────────────────────────────────────────────────────────────
+enum GameState {
+    STATE_MAIN_MENU=0,
+    STATE_CAMPAIGN_MAP,
+    STATE_CITY_MANAGEMENT,
+    STATE_RECRUITMENT,
+    STATE_PRE_BATTLE,
+    STATE_BATTLE,
+    STATE_BATTLE_RESULT,
+    STATE_UNIT_CODEX,
+    STATE_SETTINGS,
+    STATE_UNIT_EDITOR,    // sandbox only from main menu
+    STATE_QUICK_BATTLE_SETUP,
+    STATE_VICTORY,
+    STATE_DEFEAT
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  UNIT TYPE DEFINITIONS
+// ───────────────────────────────────────────────────────────────────────────
+enum SpriteBase { SPR_INFANTRY=0, SPR_CAVALRY, SPR_RANGED, SPR_BASE_COUNT };
+static const char* spriteBaseNames[SPR_BASE_COUNT]={"Infantry","Cavalry","Ranged"};
+
+struct UnitTypeDef {
+    char    name[32];
+    int     soldierCount;   // total soldiers per group
+    float   hpPerSoldier;
+    int     armor;          // 0-40
+    int     speed;          // px/s
+    int     meleeAttack;
+    int     meleeDefense;
+    float   meleeBaseDmg;
+    float   meleeAPDmg;
+    float   meleeInterval;  // seconds between attacks
+    int     range;          // 0 = melee only
+    float   missileBaseDmg;
+    float   missileAPDmg;
+    float   missileReload;
+    int     recruitGold;
+    int     recruitFood;
+    int     recruitIron;
+    int     recruitTurns;
+    int     maintGold;
+    int     maintFood;
+    // Morale base (0-100)
+    float   morale;
+    // Display
+    unsigned char r,g,b;
+    SpriteBase spriteBase;
+    int     weaponHint;    // 0=spear,1=axe,2=poleaxe,3=hammer
+    bool    isBuiltin;
+    // Lore
+    char    lore[256];
+    // Building requirements (bitmask index into BuildingType enum)
+    // encoded as bit flags for simplicity
+    int     buildingReqs;  // bit field: 0=Barracks,1=Stable,2=Range,3=Smithy,4=Workshop
+};
+
+static std::vector<UnitTypeDef> g_unitTypes;
+static std::vector<Texture2D>   g_playerTextures;
+static std::vector<Texture2D>   g_enemyTextures;
+
 // pixel helpers for 32x32 sprites
 static void px32(Image& img,int x,int y,Color c){
     if(x<0||y<0||x>=img.width||y>=img.height)return;
     ImageDrawPixel(&img,x,y,c);
 }
-
-    // Stored garrison armies (player can store/take armies in this city)
-    if(city.built[0] || true){ // always allow storing for now
-        float gx=14, gy=gridY+cellH*3+12;
-        DrawText("Stored armies:",(int)gx,(int)gy,12,C_PARCHMENT); gy+=18;
-        for(int ai=0;ai<(int)prov.garrisonArmies.size();ai++){
-            auto &arm = prov.garrisonArmies[ai];
-            float ry=gy+ai*26;
-            DrawRectangle((int)gx,(int)ry,18,18,{80,80,80,200});
-            // Composition summary
-            std::string comp="";
-            for(auto &pp:arm){ if(comp.size()) comp+=" "; comp+=TextFormat("%dx%s",pp.second,g_unitTypes[pp.first].name); }
-            DrawText(comp.c_str(),(int)(gx+22),(int)ry,12,C_SECONDARY);
-            // Take button
-            Rectangle takeBtn={(float)(SCREEN_W-300),(float)ry,72,20};
-            if(drawSmBtn(takeBtn,"TAKE",GetMousePosition(),{20,50,20,255},{40,90,38,255})){
-                // move stored army into readyUnits (merge)
-                for(auto &pp:arm){
-                    bool merged=false;
-                    for(auto &ru: g_campaign.readyUnits){ if(ru.first==pp.first){ ru.second+=pp.second; merged=true; break; } }
-                    if(!merged) g_campaign.readyUnits.push_back(pp);
-                }
-                // remove stored army
-                prov.garrisonArmies.erase(prov.garrisonArmies.begin()+ai);
-                gy-=26; ai--; continue;
-            }
-            // Delete
-            Rectangle delBtn={(float)(SCREEN_W-220),(float)ry,72,20};
-            if(drawSmBtn(delBtn,"DELETE",GetMousePosition(),{60,20,20,255},{100,40,40,255})){
-                prov.garrisonArmies.erase(prov.garrisonArmies.begin()+ai);
-                gy-=26; ai--; continue;
-            }
-        }
-        gy += prov.garrisonArmies.size()*26 + 8;
-        // Store current readyUnits as a new garrison army
-        if(!g_campaign.readyUnits.empty()){
-            if(drawSmBtn({(float)(SCREEN_W-420),(float)gy,200,26},"STORE ARMY",GetMousePosition(),{30,30,60,255},{60,60,110,255})){
-                prov.garrisonArmies.push_back(g_campaign.readyUnits);
-                g_campaign.readyUnits.clear();
-            }
-        }
-    }
-    // Draw movement arrows for provinces with armies on the move
-    for(int i=0;i<(int)g_campaign.provinces.size();i++){
-        auto &p = g_campaign.provinces[i];
-        if(p.movingTo>=0 && p.movingTo<(int)g_campaign.provinces.size()){
-            Vector2 a = p.center;
-            Vector2 b = g_campaign.provinces[p.movingTo].center;
-            DrawLineEx(a,b,3.f,{200,160,60,200});
-            // small triangle at destination
-            Vector2 dir = vnorm(v2sub(b,a));
-            Vector2 perp = {-dir.y, dir.x};
-            Vector2 tip = v2add(b, v2scale(dir, -10.f));
-            DrawTriangle(tip, v2add(tip, v2scale(perp,6.f)), v2add(tip, v2scale(perp,-6.f)), {200,160,60,200});
-        }
-    }
-    // Draw pending player move arrow
-    if(g_campaign.pendingMoveTarget>=0 && g_campaign.pendingMoveTarget<(int)g_campaign.provinces.size()){
-        Vector2 a = g_campaign.provinces[g_campaign.playerProvince].center;
-        Vector2 b = g_campaign.provinces[g_campaign.pendingMoveTarget].center;
-        DrawLineEx(a,b,2.f,{100,200,100,200});
-    }
 static void fillRect32(Image& img,int x,int y,int w,int h,Color c){
     for(int yy=y;yy<y+h;yy++)for(int xx=x;xx<x+w;xx++)px32(img,xx,yy,c);
 }
 static void circle32(Image& img,int cx,int cy,int r,Color c,bool fill=true){
     for(int dy=-r;dy<=r;dy++){
         for(int dx=-r;dx<=r;dx++){
-            float d=sqrtf((float)(dx*dx+dy*dy));
-            if(fill?(d<=r):(d>=r-1&&d<=r))
+            int d2=dx*dx+dy*dy;
+            if(fill?(d2<=r*r):((d2>=(r-1)*(r-1))&&(d2<=r*r)))
                 px32(img,cx+dx,cy+dy,c);
         }
     }
@@ -261,7 +327,7 @@ static void initBuiltinTypes(){
                  float morale,unsigned char r,unsigned char g,unsigned char b,
                  SpriteBase spr,int wh,int bReqs,const char* lore){
         UnitTypeDef t{};
-        strncpy(t.name,name,31);
+        strncpy(t.name,name,sizeof(t.name)-1); t.name[sizeof(t.name)-1]='\0';
         t.soldierCount=soldiers; t.hpPerSoldier=hp; t.armor=armor; t.speed=spd;
         t.meleeAttack=matk; t.meleeDefense=mdef;
         t.meleeBaseDmg=mbase; t.meleeAPDmg=map2; t.meleeInterval=mint;
@@ -271,7 +337,7 @@ static void initBuiltinTypes(){
         t.morale=morale;
         t.r=r; t.g=g; t.b=b; t.spriteBase=spr; t.weaponHint=wh;
         t.isBuiltin=true; t.buildingReqs=bReqs;
-        strncpy(t.lore,lore,255);
+        strncpy(t.lore,lore,sizeof(t.lore)-1); t.lore[sizeof(t.lore)-1]='\0';
         g_unitTypes.push_back(t);
     };
 
@@ -294,8 +360,405 @@ static void initBuiltinTypes(){
 static int unitTypeCount(){ return (int)g_unitTypes.size(); }
 
 // ───────────────────────────────────────────────────────────────────────────
-//  UI HELPERS
+//  RESOURCES
 // ───────────────────────────────────────────────────────────────────────────
+struct Resources {
+    float gold=500.f, food=200.f, wood=100.f, stone=50.f, iron=50.f;
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  BUILDINGS
+// ───────────────────────────────────────────────────────────────────────────
+enum BuildingType {
+    BLD_MARKET=0, BLD_FARM, BLD_SAWMILL, BLD_QUARRY, BLD_SMITHY,
+    BLD_BARRACKS, BLD_STABLE, BLD_RANGE, BLD_WORKSHOP,
+    BLD_WALLS1, BLD_WALLS2, BLD_MAGETOWER, BLD_TEMPLE, BLD_PORT,
+    BLD_COUNT
+};
+static const char* bldNames[BLD_COUNT]={
+    "Market","Farm","Sawmill","Quarry","Smithy",
+    "Barracks","Stable","Archery Range","Armoury Workshop",
+    "Walls Lv.1","Walls Lv.2","Mage Tower","Temple","Port"
+};
+static const int bldGoldCost[BLD_COUNT]={200,120,150,200,300,200,350,250,400,300,600,500,250,400};
+static const int bldWoodCost[BLD_COUNT]={0,0,0,0,0,60,100,80,120,0,0,0,0,100};
+static const int bldStoneCost[BLD_COUNT]={0,0,0,0,0,0,0,0,0,150,300,200,0,0};
+static const int bldIronCost[BLD_COUNT]={0,0,0,0,0,0,0,0,120,0,0,0,0,0};
+static const int bldTurns[BLD_COUNT]={2,1,2,3,3,2,3,2,4,3,4,5,2,3};
+static const int bldPrereq[BLD_COUNT]={-1,-1,1,-1,2,-1,5,5,4,-1,9,-1,-1,-1}; // Smithy req Sawmill, Stable/Range req Barracks, Workshop req Smithy, Walls2 req Walls1
+
+// Gold/food/wood/stone/iron per turn per building
+static const float bldGoldYield[BLD_COUNT]={80,0,0,0,0,0,0,0,0,0,0,0,0,120};
+static const float bldFoodYield[BLD_COUNT]={0,60,0,0,0,0,0,0,0,0,0,0,0,0};
+static const float bldWoodYield[BLD_COUNT]={0,0,50,0,0,0,0,0,0,0,0,0,0,0};
+static const float bldStoneYield[BLD_COUNT]={0,0,0,40,0,0,0,0,0,0,0,0,0,0};
+static const float bldIronYield[BLD_COUNT]={0,0,0,0,30,0,0,0,0,0,0,0,0,0};
+
+struct City {
+    char     name[32];
+    bool     built[BLD_COUNT];   // completed buildings
+    int      constructing;       // -1 = nothing, else BuildingType
+    int      constructTurns;     // turns remaining
+    float    defBonus;           // from walls
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  PROVINCE / CAMPAIGN MAP
+// ───────────────────────────────────────────────────────────────────────────
+enum TerrainType { TERRAIN_PLAIN=0, TERRAIN_FOREST, TERRAIN_MOUNTAIN, TERRAIN_COAST };
+static const char* terrainNames[4]={"Plain","Forest","Mountain","Coast"};
+
+enum FactionId { FACTION_PLAYER=0, FACTION_AGGRESSIVE, FACTION_DEFENSIVE, FACTION_COMMERCIAL, FACTION_NEUTRAL, FACTION_COUNT };
+static const char* factionNames[FACTION_COUNT]={"The Kingdom","Iron Pact","Stone Realm","Trade Republic","Neutral"};
+static const Color factionColors[FACTION_COUNT]={
+    {60,120,220,255},{220,50,50,255},{180,90,30,255},{220,200,50,255},{120,120,100,255}
+};
+
+struct Province {
+    char       name[32];
+    Vector2    center;          // on campaign map (0-1 normalized)
+    TerrainType terrain;
+    FactionId  owner;
+    bool       hasCity;
+    City       city;
+    std::vector<int> adjacent; // indices of adjacent provinces
+    // Army stationed here (list of unit type indices + soldier counts)
+    std::vector<std::pair<int,int>> army; // {typeIdx, soldierCount}
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  SOLDIER (individual entity in battle)
+// ───────────────────────────────────────────────────────────────────────────
+enum SoldierState { SS_IDLE=0, SS_MOVING_SLOT, SS_MOVING_TARGET, SS_ATTACKING_MELEE, SS_ATTACKING_RANGED, SS_FLEEING };
+
+struct Soldier {
+    Vector2      pos;
+    Vector2      formationSlot;
+    float        hp;
+    float        angle, angleTarget;
+    float        meleeTimer, rangeTimer;
+    bool         alive;
+    bool         inMelee;
+    int          attackTargetSoldier; // index in enemy BattleUnit's soldiers array
+    int          attackTargetUnit;    // which enemy BattleUnit
+    SoldierState state;
+    float        chargeMoveTime;     // accumulated time moving at full speed
+    bool         chargeReady;
+    float        targetRefreshTimer; // 2.3: cache nearest enemy, refresh every 0.3s
+    int          kills;              // 6.2: for veterancy
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  BATTLE UNIT (group of soldiers)
+// ───────────────────────────────────────────────────────────────────────────
+enum UnitGroupState { UGS_IDLE=0, UGS_ADVANCING, UGS_ENGAGED, UGS_ROUTING };
+
+struct BattleUnit {
+    int       typeIdx;
+    bool      isPlayer;
+    bool      selected;
+    Vector2   anchorPos;
+    Vector2   orderTarget;
+    int       orderAttack;     // index into enemy BattleUnit list (-1=none)
+    bool      hasExplicitOrder;
+    UnitGroupState groupState;
+    float     morale;
+    float     moraleTimer;     // timer since last damage for recovery
+    float     routeTimer;      // seconds left in routing
+    std::vector<Soldier> soldiers;
+    int       veterancy;       // 6.2: 0=Recruit,1=Seasoned,2=Veteran,3=Elite
+    float     aiReactTimer;    // 3.2: AI recalculates orders every 1.5s
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  PROJECTILE
+// ───────────────────────────────────────────────────────────────────────────
+struct Projectile {
+    Vector2 pos, vel;
+    float   dmg;
+    bool    alive, fromPlayer;
+    bool    isCrossbow; // affects color/speed
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  DEAD MARKER
+// ───────────────────────────────────────────────────────────────────────────
+struct DeadMarker {
+    Vector2 pos;
+    float   alpha;
+    float   timer;
+    bool    isCavalry;
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  RECRUITMENT QUEUE ENTRY
+// ───────────────────────────────────────────────────────────────────────────
+struct RecruitEntry {
+    int typeIdx;
+    int turnsLeft;
+    int originalTurns;  // 4.3: for progress bar
+};
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GLOBAL CAMPAIGN STATE
+// ───────────────────────────────────────────────────────────────────────────
+struct CampaignState {
+    int              turn=1;
+    Resources        res;
+    int              playerProvince=0;  // current province of player army
+    std::vector<Province> provinces;
+    // Player army: list of {typeIdx, soldierCount}
+    std::vector<std::pair<int,int>> playerArmy;
+    // Pending battles: province index where battle happens
+    int              pendingBattleProvince=-1;
+    bool             pendingBattleIsDefense=false;
+    // City being viewed
+    int              viewedCity=-1;
+    // Recruitment queue per city (province index -> queue)
+    std::vector<RecruitEntry> recruitQueue; // for viewed city
+    // Available units (ready to deploy) - province index -> ready units
+    std::vector<std::pair<int,int>> readyUnits;
+    // 6.3: Fog of war — explored provinces
+    bool             explored[32]={};   // true if province has been seen
+    // 3.4: Stats for victory/defeat screen
+    int              battlesWon=0;
+    int              battlesLost=0;
+    int              peakProvinces=0;
+};
+
+static CampaignState g_campaign;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  BATTLE STATE (used during STATE_BATTLE)
+// ───────────────────────────────────────────────────────────────────────────
+struct BattleState {
+    std::vector<BattleUnit>  playerUnits;
+    std::vector<BattleUnit>  enemyUnits;
+    std::vector<Projectile>  projs;
+    std::vector<DeadMarker>  dead;
+    // Camera
+    Camera2D  cam;
+    float     camZoom;
+    // Battlefield terrain obstacles (AABB)
+    std::vector<Rectangle>   obstacles;
+    // Terrain type (affects generated obstacles)
+    TerrainType terrain;
+    // Time control
+    float     timeScale;     // 1.0 or 2.0
+    bool      paused;
+    // Selection
+    bool      dragging;
+    Vector2   selStart;
+    Rectangle selRect;
+    // Province index being fought over
+    int       battleProvince;
+    bool      isDefense;
+    // Result
+    bool      battleOver;
+    bool      playerWon;
+    float     resultTimer;
+    // Loot
+    float     lootGold;
+    // Scenario name
+    char      scenarioName[64];
+};
+
+static BattleState g_battle;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  BATTLE RESULT DATA (passed to STATE_BATTLE_RESULT)
+// ───────────────────────────────────────────────────────────────────────────
+struct BattleResult {
+    bool  playerWon;
+    int   playerLosses;
+    int   enemyLosses;
+    float lootGold;
+    int   provinceIdx;
+    bool  isDefense;
+    bool  lootApplied;   // 0.2: was static local, now per-result field
+    // Survivor counts per unit type
+    std::vector<std::pair<int,int>> survivors; // {typeIdx, survivors}
+};
+static BattleResult g_lastResult;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  PRE-BATTLE STATE
+// ───────────────────────────────────────────────────────────────────────────
+struct PreBattleState {
+    int  provinceIdx;
+    bool isDefense;
+    // Which of the player's units to include (booleans)
+    std::vector<bool> include;
+    int  deployedCount;
+    // Enemy info
+    bool fogOfWar;
+    int  estimatedEnemyStrength;
+};
+static PreBattleState g_preBattle;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GLOBAL GAME STATE
+// ───────────────────────────────────────────────────────────────────────────
+static GameState g_state = STATE_MAIN_MENU;
+static bool      g_quitRequested = false;
+static bool      g_hasSave = false;
+static float     g_menuTime = 0.f;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  SETTINGS (3.1)
+// ───────────────────────────────────────────────────────────────────────────
+static const char* SETTINGS_FILE = "settings.ini";
+struct GameSettings {
+    float masterVolume = 1.f;
+    float musicVolume  = 0.7f;
+    int   difficulty   = 1;   // 0=EASY,1=NORMAL,2=HARD
+    bool  showFPS      = false;
+    int   language     = 0;   // 0=EN,1=ES
+};
+static GameSettings g_settings;
+
+static void saveSettings(){
+    FILE* f=fopen(SETTINGS_FILE,"w");
+    if(!f) return;
+    fprintf(f,"masterVolume %.3f\n",g_settings.masterVolume);
+    fprintf(f,"musicVolume %.3f\n",g_settings.musicVolume);
+    fprintf(f,"difficulty %d\n",g_settings.difficulty);
+    fprintf(f,"showFPS %d\n",(int)g_settings.showFPS);
+    fprintf(f,"language %d\n",g_settings.language);
+    fclose(f);
+}
+static void loadSettings(){
+    FILE* f=fopen(SETTINGS_FILE,"r");
+    if(!f) return;
+    char key[64];
+    while(fscanf(f,"%63s",key)==1){
+        if(strcmp(key,"masterVolume")==0) fscanf(f,"%f",&g_settings.masterVolume);
+        else if(strcmp(key,"musicVolume")==0) fscanf(f,"%f",&g_settings.musicVolume);
+        else if(strcmp(key,"difficulty")==0) fscanf(f,"%d",&g_settings.difficulty);
+        else if(strcmp(key,"showFPS")==0){ int v=0; fscanf(f,"%d",&v); g_settings.showFPS=(bool)v; }
+        else if(strcmp(key,"language")==0) fscanf(f,"%d",&g_settings.language);
+    }
+    fclose(f);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GLOBAL RNG (1.2)
+// ───────────────────────────────────────────────────────────────────────────
+static std::mt19937 g_rng(std::random_device{}());
+static inline float frandMT(){ return std::uniform_real_distribution<float>(0.f,1.f)(g_rng); }
+static inline int randIntMT(int lo,int hi){ return std::uniform_int_distribution<int>(lo,hi)(g_rng); }
+
+// ───────────────────────────────────────────────────────────────────────────
+//  BATTLE LOG (6.4)
+// ───────────────────────────────────────────────────────────────────────────
+static std::deque<std::string> g_battleLog;
+static void battleLogAdd(const std::string& s){
+    g_battleLog.push_front(s);
+    if((int)g_battleLog.size()>50) g_battleLog.pop_back();
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  STATE FADE SYSTEM (4.2)
+// ───────────────────────────────────────────────────────────────────────────
+static float     g_fadeAlpha     = 0.f;
+static GameState g_pendingState  = STATE_MAIN_MENU;
+static bool      g_fadingOut     = false;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  UI STATE GLOBALS (4.4, 4.5)
+// ───────────────────────────────────────────────────────────────────────────
+static int g_deleteConfirmIdx  = -1;  // 4.4: garrison delete confirmation
+static int g_selectedProvince  = -1;  // 4.5: pulsing selected province
+
+// ───────────────────────────────────────────────────────────────────────────
+//  VALIDATING INDEX HELPER (5.4)
+// ───────────────────────────────────────────────────────────────────────────
+template<typename T>
+static inline bool validIdx(int i, const std::vector<T>& v){ return i>=0 && i<(int)v.size(); }
+
+// For quick battle (no campaign)
+static bool g_quickBattle = false;
+struct QuickBattleSetup {
+    std::vector<int> playerCounts;
+    std::vector<int> enemyCounts;
+    int difficulty; // 0=easy,1=normal,2=hard
+};
+static QuickBattleSetup g_quickSetup;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  UNIT EDITOR STATE (sandbox)
+// ───────────────────────────────────────────────────────────────────────────
+static int      g_editTypeIdx = 0;
+static bool     g_editorDropdownOpen = false;
+static bool     g_editorPreviewDirty = true;
+static Texture2D g_editorPreviewTex = {0};
+static float    g_editorPreviewAngle = 0.f;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  FORWARD DECLARATIONS
+// ───────────────────────────────────────────────────────────────────────────
+static void saveGame();
+static bool loadGame();
+static void drawGarrisonArmiesPanel(Province& prov, float gridY, float cellH, Vector2 mouse);
+static void drawCampaignMovementArrows();
+static GameState updateDrawVictory(Vector2 mouse);
+static GameState updateDrawDefeat(Vector2 mouse);
+
+// ───────────────────────────────────────────────────────────────────────────
+//  GARRISON ARMIES PANEL (0.1: extracted from orphan code)
+// ───────────────────────────────────────────────────────────────────────────
+static void drawGarrisonArmiesPanel(Province& prov, float gridY, float cellH, Vector2 mouse){
+    // Draw a panel showing garrisoned armies for the given province
+    // Currently shown inline in city management as part of the building grid;
+    // this extracted function can be called for additional overlay
+    float panelY=gridY+3*cellH+8;
+    if(panelY+60>SCREEN_H-44) return;
+    DrawRectangle(8,(int)panelY,(int)(SCREEN_W-16),54,{10,16,10,180});
+    DrawRectangleLinesEx({8,panelY,(float)(SCREEN_W-16),54},1,{60,90,50,180});
+    DrawText("Garrison:",(int)18,(int)(panelY+6),13,C_GOLD);
+    if(prov.army.empty()){
+        DrawText("(no garrison)",(int)100,(int)(panelY+8),12,C_SECONDARY);
+    } else {
+        int ax=100;
+        for(int k=0;k<(int)prov.army.size()&&k<8;k++){
+            auto [ti,cnt]=prov.army[k];
+            if(ti>=unitTypeCount()) continue;
+            const UnitTypeDef& td=g_unitTypes[ti];
+            DrawRectangle(ax,(int)(panelY+6),14,14,{td.r,td.g,td.b,220});
+            DrawText(TextFormat("%s x%d",td.name,cnt),ax+18,(int)(panelY+8),11,C_PARCHMENT);
+            ax+=120+MeasureText(td.name,11);
+        }
+    }
+    (void)mouse;
+    (void)cellH;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  CAMPAIGN MOVEMENT ARROWS (0.1: extracted function)
+// ───────────────────────────────────────────────────────────────────────────
+static void drawCampaignMovementArrows(){
+    // Draw arrows from player province to adjacent reachable provinces
+    if(g_campaign.playerProvince<0||g_campaign.playerProvince>=(int)g_campaign.provinces.size()) return;
+    Province& pp=g_campaign.provinces[g_campaign.playerProvince];
+    for(int adj:pp.adjacent){
+        if(adj<0||adj>=(int)g_campaign.provinces.size()) continue;
+        Province& ap=g_campaign.provinces[adj];
+        Vector2 dir=vnorm(v2sub(ap.center,pp.center));
+        Vector2 mid={pp.center.x+dir.x*40.f,pp.center.y+dir.y*40.f};
+        // Small arrow pointing toward adjacent
+        Color arrowCol=(ap.owner==FACTION_PLAYER)?C_ALLY:C_ENEMY_COL;
+        DrawLineEx(mid,v2add(mid,v2scale(dir,24.f)),2.f,{arrowCol.r,arrowCol.g,arrowCol.b,120});
+        // Arrowhead
+        Vector2 tip=v2add(mid,v2scale(dir,24.f));
+        Vector2 perp={-dir.y,dir.x};
+        DrawTriangle(tip,
+            v2sub(v2sub(tip,v2scale(dir,8.f)),v2scale(perp,5.f)),
+            v2add(v2sub(tip,v2scale(dir,8.f)),v2scale(perp,5.f)),
+            {arrowCol.r,arrowCol.g,arrowCol.b,100});
+    }
+}
+
+
 static bool drawButton(Rectangle r,const char* lbl,Vector2 m,
                        Color cn={40,55,40,255},Color ch={70,110,60,255}){
     bool hv=ptInRect(m,r);
@@ -318,6 +781,7 @@ static bool drawSmBtn(Rectangle r,const char* lbl,Vector2 m,
 
 static int drawIntSlider(Rectangle r,int val,int mn,int mx,
                          const char* label,Vector2 mouse,Color fill={80,160,80,200}){
+    if(mx<=mn) return val; // 1.5: guard division by zero
     if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-15),12,C_SECONDARY);
     DrawRectangleRec(r,{18,18,18,255});
     DrawRectangleLinesEx(r,1,{55,55,55,255});
@@ -336,6 +800,7 @@ static int drawIntSlider(Rectangle r,int val,int mn,int mx,
 
 static float drawFloatSlider(Rectangle r,float val,float mn,float mx,
                               const char* label,const char* fmt,Vector2 mouse,Color fill={80,160,80,200}){
+    if(mx<=mn) return val; // 1.5: guard division by zero
     if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-15),12,C_SECONDARY);
     DrawRectangleRec(r,{18,18,18,255});
     DrawRectangleLinesEx(r,1,{55,55,55,255});
@@ -352,7 +817,7 @@ static float drawFloatSlider(Rectangle r,float val,float mn,float mx,
     return val;
 }
 
-static void drawSoldierSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale,Color tint,bool drawShadow=true){
+static void drawSoldierSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale,Color tint,bool drawShadow){
     float s=32.f*scale;
     if(drawShadow){
         Color shad={0,0,0,50};
@@ -368,6 +833,44 @@ static void drawHealthBar(Vector2 pos,float hp,float maxHp,float w,float scl=1.f
     DrawRectangle((int)(pos.x-bw/2),(int)(pos.y-16*scl),(int)bw,(int)(5*scl),DARKGRAY);
     Color c=ratio>0.5f?Color{0,228,48,255}:ratio>0.25f?Color{253,249,0,255}:Color{230,41,55,255};
     DrawRectangle((int)(pos.x-bw/2),(int)(pos.y-16*scl),(int)(bw*ratio),(int)(5*scl),c);
+}
+
+// 3.8: Word-wrapped text helper
+static void drawWrappedText(const char* text,int x,int y,int maxWidth,int fontSize,Color col){
+    if(!text||!text[0]) return;
+    char word[128]; int wi=0;
+    char line[512]; int li=0;
+    int curX=0;
+    auto flushLine=[&](){
+        line[li]='\0';
+        if(li>0){DrawText(line,x,y,fontSize,col);y+=fontSize+2;}
+        li=0; curX=0;
+    };
+    for(int i=0;;i++){
+        char c=text[i];
+        if(c==' '||c=='\0'||c=='\n'){
+            word[wi]='\0';
+            if(wi>0){
+                int ww=MeasureText(word,fontSize);
+                int spw=(curX>0)?MeasureText(" ",fontSize):0;
+                if(curX>0&&curX+spw+ww>maxWidth){
+                    flushLine();
+                    for(int k=0;k<wi;k++) line[li++]=word[k];
+                    curX=ww;
+                } else {
+                    if(curX>0){line[li++]=' ';curX+=spw;}
+                    for(int k=0;k<wi;k++) line[li++]=word[k];
+                    curX+=ww;
+                }
+                wi=0;
+            }
+            if(c=='\n') flushLine();
+            if(c=='\0') break;
+        } else {
+            if(wi<127) word[wi++]=c;
+        }
+    }
+    flushLine();
 }
 
 // Draw stat bars (normalized) for a unit type
@@ -433,11 +936,11 @@ static void generateCampaignMap(){
     for(int i=0;i<n;i++){
         const ProvinceTemplate& tp=tpls[i];
         Province p{};
-        strncpy(p.name,tp.name,31);
+        strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
         p.center={tp.nx*(float)(SCREEN_W>0?SCREEN_W:1280), tp.ny*(float)(SCREEN_H>0?SCREEN_H:768)};
         p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
         if(tp.hasCity){
-            strncpy(p.city.name,tp.cityName,31);
+            strncpy(p.city.name,tp.cityName,sizeof(p.city.name)-1); p.city.name[sizeof(p.city.name)-1]='\0';
             memset(p.city.built,0,sizeof(p.city.built));
             p.city.constructing=-1;
             p.city.constructTurns=0;
@@ -458,10 +961,6 @@ static void generateCampaignMap(){
             }
         }
         p.army.clear();
-        p.garrisonArmies.clear();
-        p.movingTo=-1;
-        p.moveTurnsRemaining=0;
-        p.movingArmy.clear();
         // Add enemy armies
         if(tp.owner==FACTION_AGGRESSIVE){
             p.army.push_back({0,40}); // Spear Levy x40
@@ -555,7 +1054,7 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
     g_battle.battleProvince=provinceIdx;
     g_battle.isDefense=isDefense;
     g_battle.timeScale=1.f;
-    strncpy(g_battle.scenarioName,scenarioName,63);
+    strncpy(g_battle.scenarioName,scenarioName,sizeof(g_battle.scenarioName)-1); g_battle.scenarioName[sizeof(g_battle.scenarioName)-1]='\0';
 
     // Camera centered on player deployment zone
     g_battle.cam.offset={SCREEN_W/2.f,(SCREEN_H-HUD_H)/2.f};
@@ -600,6 +1099,8 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
         bu.orderAttack=-1;
         bu.morale=td.morale;
         bu.groupState=UGS_IDLE;
+        bu.veterancy=0;
+        bu.aiReactTimer=0.f;
         int soldierCount=std::min(cnt,(int)td.soldierCount);
         auto slots=calcFormationSlots(bu.anchorPos,soldierCount,0.f);
         for(int s=0;s<soldierCount;s++){
@@ -612,6 +1113,8 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
             sol.attackTargetSoldier=-1; sol.attackTargetUnit=-1;
             sol.state=SS_IDLE;
             sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
+            sol.targetRefreshTimer=0.f;
+            sol.kills=0;
             bu.soldiers.push_back(sol);
         }
         g_battle.playerUnits.push_back(bu);
@@ -631,6 +1134,8 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
         bu.orderAttack=-1;
         bu.morale=td.morale;
         bu.groupState=UGS_IDLE;
+        bu.veterancy=0;
+        bu.aiReactTimer=0.f;
         int soldierCount=std::min(cnt,(int)td.soldierCount);
         auto slots=calcFormationSlots(bu.anchorPos,soldierCount,180.f);
         for(int s=0;s<soldierCount;s++){
@@ -643,6 +1148,8 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
             sol.attackTargetSoldier=-1; sol.attackTargetUnit=-1;
             sol.state=SS_IDLE;
             sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
+            sol.targetRefreshTimer=0.f;
+            sol.kills=0;
             bu.soldiers.push_back(sol);
         }
         g_battle.enemyUnits.push_back(bu);
@@ -658,8 +1165,8 @@ static float soldierMeleeRadius(const UnitTypeDef& td){
 
 static float calcMeleeDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd,bool chargeBonus){
     float hitChance=std::max(8.f,std::min(92.f,30.f+(float)attTd.meleeAttack-(float)defTd.meleeDefense));
-    if(frand()*100.f>=hitChance) return 0.f;
-    float armRed=frand()*0.5f*(float)defTd.armor+(float)defTd.armor*0.5f;
+    if(frandMT()*100.f>=hitChance) return 0.f;
+    float armRed=frandMT()*0.5f*(float)defTd.armor+(float)defTd.armor*0.5f;
     armRed=std::min(armRed,(float)defTd.armor);
     float dmg=std::max(0.5f,attTd.meleeBaseDmg*(1.f-armRed/100.f)+attTd.meleeAPDmg);
     if(chargeBonus) dmg*=2.5f;
@@ -667,7 +1174,7 @@ static float calcMeleeDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd,bool
 }
 
 static float calcMissileDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd){
-    float armRed=frand()*0.5f*(float)defTd.armor+(float)defTd.armor*0.5f;
+    float armRed=frandMT()*0.5f*(float)defTd.armor+(float)defTd.armor*0.5f;
     armRed=std::min(armRed,(float)defTd.armor);
     return std::max(0.f,attTd.missileBaseDmg*(1.f-armRed/100.f)+attTd.missileAPDmg);
 }
@@ -816,24 +1323,40 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                               &&foeUnits[targetUnit].soldiers[targetSol].alive);
 
             if(!targetValid){
-                // Find new target — prefer group-order target
-                if(hasAttackOrder){
-                    // Nearest soldier in the ordered unit
-                    float best=1e9f; int bs=-1;
-                    for(int s2=0;s2<(int)foeUnits[bu.orderAttack].soldiers.size();s2++){
-                        if(!foeUnits[bu.orderAttack].soldiers[s2].alive) continue;
-                        float d=vdist(sol.pos,foeUnits[bu.orderAttack].soldiers[s2].pos);
-                        if(d<best){best=d;bs=s2;}
+                // 2.3: Only re-scan for nearest enemy every 0.3s
+                sol.targetRefreshTimer-=dt;
+                bool needRefresh=(sol.targetRefreshTimer<=0.f);
+                if(!needRefresh&&sol.attackTargetUnit>=0){
+                    // Re-check if cached target is still valid
+                    if(validIdx(sol.attackTargetUnit,foeUnits)&&
+                       validIdx(sol.attackTargetSoldier,foeUnits[sol.attackTargetUnit].soldiers)&&
+                       foeUnits[sol.attackTargetUnit].soldiers[sol.attackTargetSoldier].alive){
+                        targetUnit=sol.attackTargetUnit;
+                        targetSol=sol.attackTargetSoldier;
+                        targetValid=true;
+                    } else needRefresh=true;
+                }
+                if(needRefresh){
+                    sol.targetRefreshTimer=0.3f;
+                    // Find new target — prefer group-order target
+                    if(hasAttackOrder){
+                        // Nearest soldier in the ordered unit
+                        float best=1e9f; int bs=-1;
+                        for(int s2=0;s2<(int)foeUnits[bu.orderAttack].soldiers.size();s2++){
+                            if(!foeUnits[bu.orderAttack].soldiers[s2].alive) continue;
+                            float d=vdist(sol.pos,foeUnits[bu.orderAttack].soldiers[s2].pos);
+                            if(d<best){best=d;bs=s2;}
+                        }
+                        if(bs>=0){targetUnit=bu.orderAttack;targetSol=bs;targetValid=true;}
                     }
-                    if(bs>=0){targetUnit=bu.orderAttack;targetSol=bs;targetValid=true;}
+                    if(!targetValid){
+                        // Auto-target: nearest enemy
+                        auto [nu,ns]=findNearestEnemySoldier(sol.pos,foeUnits);
+                        if(nu>=0){targetUnit=nu;targetSol=ns;targetValid=true;}
+                    }
+                    sol.attackTargetUnit=targetUnit;
+                    sol.attackTargetSoldier=targetSol;
                 }
-                if(!targetValid){
-                    // Auto-target: nearest enemy
-                    auto [nu,ns]=findNearestEnemySoldier(sol.pos,foeUnits);
-                    if(nu>=0){targetUnit=nu;targetSol=ns;targetValid=true;}
-                }
-                sol.attackTargetUnit=targetUnit;
-                sol.attackTargetSoldier=targetSol;
             }
 
             if(!targetValid){sol.state=SS_IDLE;continue;}
@@ -864,15 +1387,26 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     tgt.hp-=dmg;
                     if(tgt.hp<=0){
                         tgt.alive=false;
+                        sol.kills++;  // 6.2: track kills for veterancy
                         g_battle.dead.push_back({tgt.pos,1.f,8.f,fTd.spriteBase==SPR_CAVALRY});
-                        // Nearby ally morale drop
-                        for(auto& fu:foeUnits){
-                            for(auto& fs:fu.soldiers){
+                        // Battle log
+                        if(fTd.soldierCount>0){
+                            char logbuf[128];
+                            snprintf(logbuf,127,"[T%d] %s soldier slain by %s",
+                                g_campaign.turn,
+                                fTd.name,
+                                td.name);
+                            battleLogAdd(logbuf);
+                        }
+                        // Nearby ally morale drop — use reference safely
+                        for(int fui=0;fui<(int)foeUnits.size();fui++){
+                            for(auto& fs:foeUnits[fui].soldiers){
                                 if(!fs.alive) continue;
-                                if(vdist(tgt.pos,fs.pos)<80.f) fu.morale-=3.f;
+                                if(vdist(tgt.pos,fs.pos)<80.f) foeUnits[fui].morale-=3.f;
                             }
                         }
                         sol.attackTargetSoldier=-1; sol.attackTargetUnit=-1;
+                        sol.targetRefreshTimer=0.f; // force retarget next tick
                     }
                     sol.meleeTimer=td.meleeInterval;
                 }
@@ -931,29 +1465,94 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
     }
 }
 
-// Enemy AI: assign orders each frame (for units without explicit orders)
+// Enemy AI: assign orders periodically (3.2: aiReactTimer, differentiated behaviors)
 static void updateEnemyAI(float dt){
-    (void)dt;
+    int nPlayerAlive=0;
+    for(auto& pu:g_battle.playerUnits){
+        int ac=0; for(auto& s:pu.soldiers) if(s.alive) ac++;
+        if(ac>0) nPlayerAlive++;
+    }
+    if(nPlayerAlive==0) return;
+
     for(int ui=0;ui<(int)g_battle.enemyUnits.size();ui++){
         BattleUnit& bu=g_battle.enemyUnits[ui];
         if(bu.groupState==UGS_ROUTING) continue;
         int aliveCnt=0;
         for(auto& sol:bu.soldiers) if(sol.alive) aliveCnt++;
         if(aliveCnt==0) continue;
-        // Always advance toward nearest player group
-        if(bu.orderAttack<0){
-            float best=1e9f; int best_u=-1;
-            for(int pu=0;pu<(int)g_battle.playerUnits.size();pu++){
-                int pAlive=0;
-                for(auto& ps:g_battle.playerUnits[pu].soldiers) if(ps.alive) pAlive++;
-                if(pAlive==0) continue;
-                float d=vdist(bu.anchorPos,g_battle.playerUnits[pu].anchorPos);
-                if(d<best){best=d;best_u=pu;}
+
+        // Tick AI react timer
+        bu.aiReactTimer-=dt;
+        if(bu.aiReactTimer>0) continue; // skip recalculation this frame
+        bu.aiReactTimer=1.5f; // recalculate every 1.5s
+
+        if(bu.typeIdx>=unitTypeCount()) continue;
+        const UnitTypeDef& td=g_unitTypes[bu.typeIdx];
+
+        // Find nearest player group
+        float best=1e9f; int best_u=-1;
+        for(int pu=0;pu<(int)g_battle.playerUnits.size();pu++){
+            int pAlive=0;
+            for(auto& ps:g_battle.playerUnits[pu].soldiers) if(ps.alive) pAlive++;
+            if(pAlive==0) continue;
+            float d=vdist(bu.anchorPos,g_battle.playerUnits[pu].anchorPos);
+            if(d<best){best=d;best_u=pu;}
+        }
+        if(best_u<0) continue;
+
+        Vector2 targetPos=g_battle.playerUnits[best_u].anchorPos;
+        float distToTarget=vdist(bu.anchorPos,targetPos);
+
+        if(td.range>0){
+            // 3.2: Ranged — maintain 200px distance, retreat if <150px
+            if(distToTarget<150.f){
+                // Retreat
+                Vector2 away=vnorm(v2sub(bu.anchorPos,targetPos));
+                bu.orderTarget=v2add(bu.anchorPos,v2scale(away,200.f));
+                bu.orderAttack=-1;
+                bu.hasExplicitOrder=true;
+                bu.anchorPos=bu.orderTarget;
+            } else if(distToTarget>220.f){
+                bu.orderAttack=best_u;
+                bu.hasExplicitOrder=false;
+            } else {
+                // Hold — just attack in range
+                bu.orderAttack=best_u;
+                bu.hasExplicitOrder=false;
+            }
+        } else if(td.spriteBase==SPR_CAVALRY){
+            // 3.2: Cavalry — flanking angle 45-90 degrees lateral
+            Vector2 toTarget=vnorm(v2sub(targetPos,bu.anchorPos));
+            float flankAngle=DEG2RAD*(45.f+frandMT()*45.f);
+            float side=(ui%2==0)?1.f:-1.f;
+            Vector2 flankDir={
+                toTarget.x*cosf(flankAngle*side)-toTarget.y*sinf(flankAngle*side),
+                toTarget.x*sinf(flankAngle*side)+toTarget.y*cosf(flankAngle*side)
+            };
+            bu.orderTarget=v2add(targetPos,v2scale(flankDir,80.f));
+            bu.orderAttack=best_u;
+            bu.hasExplicitOrder=true;
+            bu.anchorPos=v2add(bu.anchorPos,v2scale(vnorm(v2sub(bu.orderTarget,bu.anchorPos)),5.f));
+        } else {
+            // 3.2: Infantry — distribute across different player groups if multiple exist
+            if(nPlayerAlive>1){
+                // Spread: pick target based on our index
+                int targetIdx=ui % nPlayerAlive;
+                int counted=0;
+                for(int pu=0;pu<(int)g_battle.playerUnits.size();pu++){
+                    int ac=0; for(auto& ps:g_battle.playerUnits[pu].soldiers) if(ps.alive) ac++;
+                    if(ac>0){
+                        if(counted==targetIdx){best_u=pu;break;}
+                        counted++;
+                    }
+                }
             }
             bu.orderAttack=best_u;
+            bu.hasExplicitOrder=false;
         }
-        // Update formation slots toward enemy
-        if(bu.orderAttack>=0&&bu.orderAttack<(int)g_battle.playerUnits.size()){
+
+        // Update formation slots toward target
+        if(bu.orderAttack>=0&&validIdx(bu.orderAttack,g_battle.playerUnits)){
             auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),180.f);
             for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
                 bu.soldiers[s].formationSlot=slots[s];
@@ -983,7 +1582,7 @@ static void drawBattlefield(){
         }
         terrainTex=LoadTextureFromImage(terrainNoise);
         UnloadImage(terrainNoise);
-        terrainInit=true;
+        terrainInit=true; // 1.1: was missing, caused re-generation every frame
     }
     DrawTexture(terrainTex,0,0,WHITE);
 
@@ -1054,8 +1653,14 @@ static void drawAllUnits(){
                         {180,40,40,40});
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
-            drawSoldierSprite(g_enemyTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,WHITE);
-            drawHealthBar(sol.pos,sol.hp,td.hpPerSoldier,14.f,0.9f);
+            drawSoldierSprite(g_enemyTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,WHITE,true);
+            // 3.5: HP bar only when damaged
+            if(sol.hp<td.hpPerSoldier){
+                float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)bw,2,DARKGRAY);
+                Color hc=ratio>0.5f?Color{0,228,48,255}:ratio>0.25f?Color{253,249,0,255}:Color{230,41,55,255};
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)(bw*ratio),2,hc);
+            }
         }
         // Morale bar
         float mr=bu.morale/100.f;
@@ -1071,16 +1676,34 @@ static void drawAllUnits(){
         int alive=0; for(auto& s:bu.soldiers) if(s.alive) alive++;
         if(alive==0) continue;
         if(bu.selected){
+            // 3.10: Pulsing selection circle
+            float pulse=soldierMeleeRadius(td)*(float)alive*0.4f+24.f+sinf(g_menuTime*4.f)*4.f;
             DrawCircleLines((int)bu.anchorPos.x,(int)bu.anchorPos.y,
-                            (int)(soldierMeleeRadius(td)*(float)alive*0.4f+24.f),
-                            {C_ALLY.r,C_ALLY.g,C_ALLY.b,120});
+                            (int)pulse,
+                            {C_ALLY.r,C_ALLY.g,C_ALLY.b,150});
+            // 3.10: Soldier count above anchor
+            char cntbuf[16]; snprintf(cntbuf,15,"%d",alive);
+            int ctw=MeasureText(cntbuf,11);
+            DrawText(cntbuf,(int)(bu.anchorPos.x-ctw/2),(int)(bu.anchorPos.y-pulse-14),11,C_ALLY);
         }
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
             Color tint={td.r,td.g,td.b,255};
             if(bu.selected) tint=WHITE;
-            drawSoldierSprite(g_playerTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,tint);
-            drawHealthBar(sol.pos,sol.hp,td.hpPerSoldier,14.f,0.9f);
+            drawSoldierSprite(g_playerTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,tint,true);
+            // 3.5: HP bar only when damaged
+            if(sol.hp<td.hpPerSoldier){
+                float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)bw,2,DARKGRAY);
+                Color hc=ratio>0.5f?Color{0,228,48,255}:ratio>0.25f?Color{253,249,0,255}:Color{230,41,55,255};
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)(bw*ratio),2,hc);
+            }
+        }
+        // 6.2: Veterancy stars above anchor
+        if(bu.veterancy>0){
+            for(int v=0;v<bu.veterancy;v++){
+                DrawText("★",(int)(bu.anchorPos.x-10+v*10),(int)(bu.anchorPos.y-36),12,C_GOLD);
+            }
         }
         // Morale bar
         float mr=bu.morale/100.f;
@@ -1161,6 +1784,45 @@ static void drawBattleHUD(Vector2 mouse){
                  g_battle.timeScale>1.f?"Speed: x2":"Speed: x1",mouse,
                  {30,30,50,255},{50,50,80,255}))
         g_battle.timeScale=(g_battle.timeScale>1.f)?1.f:2.f;
+
+    // 3.6: Minimap (150x90px, bottom-right above HUD)
+    int mmW=150,mmH=90;
+    int mmX=SCREEN_W-160, mmY=hudY-mmH-8;
+    DrawRectangle(mmX,mmY,mmW,mmH,{0,0,0,180});
+    DrawRectangleLinesEx({(float)mmX,(float)mmY,(float)mmW,(float)mmH},1,{80,65,30,200});
+    // Draw unit dots
+    for(auto& bu:g_battle.playerUnits){
+        int ac=0; for(auto& s:bu.soldiers) if(s.alive) ac++;
+        if(ac==0) continue;
+        int mx2=(int)(mmX+bu.anchorPos.x/(float)BATTLE_W*mmW);
+        int my2=(int)(mmY+bu.anchorPos.y/(float)BATTLE_H*mmH);
+        DrawRectangle(mx2-2,my2-2,4,4,C_ALLY);
+    }
+    for(auto& bu:g_battle.enemyUnits){
+        int ac=0; for(auto& s:bu.soldiers) if(s.alive) ac++;
+        if(ac==0) continue;
+        int mx2=(int)(mmX+bu.anchorPos.x/(float)BATTLE_W*mmW);
+        int my2=(int)(mmY+bu.anchorPos.y/(float)BATTLE_H*mmH);
+        DrawRectangle(mx2-2,my2-2,4,4,C_ENEMY_COL);
+    }
+    // Draw viewport rect on minimap
+    float vzl=g_battle.cam.zoom;
+    float vwW=(float)SCREEN_W/(vzl*(float)BATTLE_W)*mmW;
+    float vwH=(float)(SCREEN_H-HUD_H)/(vzl*(float)BATTLE_H)*mmH;
+    float vwX=mmX+(g_battle.cam.target.x-(float)SCREEN_W*0.5f/vzl)/(float)BATTLE_W*mmW;
+    float vwY=mmY+(g_battle.cam.target.y-(float)(SCREEN_H-HUD_H)*0.5f/vzl)/(float)BATTLE_H*mmH;
+    DrawRectangleLinesEx({vwX,vwY,vwW,vwH},1,WHITE);
+
+    // 6.4: Battle log (last 5 entries, fade older ones)
+    int logX=8, logY=hudY-8;
+    int logCount=std::min(5,(int)g_battleLog.size());
+    for(int i=0;i<logCount;i++){
+        unsigned char a=(unsigned char)(200-i*35);
+        DrawText(g_battleLog[i].c_str(),logX,logY-(i+1)*16,10,{180,160,120,a});
+    }
+
+    // 4.9: FPS counter
+    if(g_settings.showFPS) DrawFPS(8,8);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1169,28 +1831,36 @@ static void drawBattleHUD(Vector2 mouse){
 static GameState updateDrawBattle(Vector2 mouse,float dt){
     float eff=dt*g_battle.timeScale;
 
+    // 4.8: Camera target and zoom targets for smooth lerp
+    static Vector2 g_camTarget={BATTLE_W/2.f,BATTLE_H/2.f};
+    static float   g_zoomTarget=1.f;
+
     // Controls
     if(IsKeyPressed(KEY_ESCAPE)) g_battle.paused=!g_battle.paused;
     if(IsKeyPressed(KEY_SPACE)) g_battle.timeScale=(g_battle.timeScale>1.f)?1.f:2.f;
 
     // Camera pan (arrows / WASD)
     float panSpd=400.f/g_battle.cam.zoom;
-    if(IsKeyDown(KEY_RIGHT)||IsKeyDown(KEY_D)) g_battle.cam.target.x+=panSpd*dt;
-    if(IsKeyDown(KEY_LEFT)||IsKeyDown(KEY_A))  g_battle.cam.target.x-=panSpd*dt;
-    if(IsKeyDown(KEY_DOWN)||IsKeyDown(KEY_S))  g_battle.cam.target.y+=panSpd*dt;
-    if(IsKeyDown(KEY_UP)||IsKeyDown(KEY_W))    g_battle.cam.target.y-=panSpd*dt;
+    if(IsKeyDown(KEY_RIGHT)||IsKeyDown(KEY_D)) g_camTarget.x+=panSpd*dt;
+    if(IsKeyDown(KEY_LEFT)||IsKeyDown(KEY_A))  g_camTarget.x-=panSpd*dt;
+    if(IsKeyDown(KEY_DOWN)||IsKeyDown(KEY_S))  g_camTarget.y+=panSpd*dt;
+    if(IsKeyDown(KEY_UP)||IsKeyDown(KEY_W))    g_camTarget.y-=panSpd*dt;
     // Zoom
     float wheel=GetMouseWheelMove();
     if(wheel!=0){
-        g_battle.camZoom+=wheel*0.1f;
-        g_battle.camZoom=std::max(0.5f,std::min(2.f,g_battle.camZoom));
-        g_battle.cam.zoom=g_battle.camZoom;
+        g_zoomTarget+=wheel*0.1f;
+        g_zoomTarget=std::max(0.5f,std::min(2.f,g_zoomTarget));
     }
-    // Clamp camera
+    // Clamp target
     float hw=(SCREEN_W*0.5f)/g_battle.cam.zoom;
     float hh=((SCREEN_H-HUD_H-TOPBAR_H)*0.5f)/g_battle.cam.zoom;
-    g_battle.cam.target.x=std::max(hw,std::min((float)BATTLE_W-hw,g_battle.cam.target.x));
-    g_battle.cam.target.y=std::max(hh,std::min((float)BATTLE_H-hh,g_battle.cam.target.y));
+    g_camTarget.x=std::max(hw,std::min((float)BATTLE_W-hw,g_camTarget.x));
+    g_camTarget.y=std::max(hh,std::min((float)BATTLE_H-hh,g_camTarget.y));
+    // 4.8: Smooth lerp
+    g_battle.cam.target.x+=(g_camTarget.x-g_battle.cam.target.x)*8.f*dt;
+    g_battle.cam.target.y+=(g_camTarget.y-g_battle.cam.target.y)*8.f*dt;
+    g_battle.camZoom+=(g_zoomTarget-g_battle.camZoom)*6.f*dt;
+    g_battle.cam.zoom=g_battle.camZoom;
     g_battle.cam.offset={(float)SCREEN_W*0.5f,(float)(SCREEN_H-HUD_H+TOPBAR_H)*0.5f};
 
     // Pause overlay
@@ -1312,20 +1982,44 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                 }
             }
         }
-        g_battle.projs.erase(std::remove_if(g_battle.projs.begin(),g_battle.projs.end(),
-            [](const Projectile& p){return !p.alive;}),g_battle.projs.end());
+        // 2.5: Projectile cleanup with swap-with-back (faster than erase)
+        for(int pi=(int)g_battle.projs.size()-1;pi>=0;pi--){
+            if(!g_battle.projs[pi].alive){
+                g_battle.projs[pi]=g_battle.projs.back();
+                g_battle.projs.pop_back();
+            }
+        }
 
-        // Fade dead markers
+        // Fade dead markers (2.5: swap-with-back)
         for(auto& d:g_battle.dead){d.timer-=eff;d.alpha=d.timer/8.f;}
-        g_battle.dead.erase(std::remove_if(g_battle.dead.begin(),g_battle.dead.end(),
-            [](const DeadMarker& d){return d.timer<=0;}),g_battle.dead.end());
+        for(int di=(int)g_battle.dead.size()-1;di>=0;di--){
+            if(g_battle.dead[di].timer<=0){
+                g_battle.dead[di]=g_battle.dead.back();
+                g_battle.dead.pop_back();
+            }
+        }
 
         // Check win / lose
         int pa=0,ea=0;
         for(auto& bu:g_battle.playerUnits) for(auto& s:bu.soldiers) if(s.alive) pa++;
         for(auto& bu:g_battle.enemyUnits) for(auto& s:bu.soldiers) if(s.alive) ea++;
-        if(pa==0){g_battle.battleOver=true;g_battle.playerWon=false;}
-        if(ea==0&&pa>0){g_battle.battleOver=true;g_battle.playerWon=true;}
+        if(pa==0){g_battle.battleOver=true;g_battle.playerWon=false;
+            battleLogAdd("DEFEAT — all forces destroyed!");}
+        if(ea==0&&pa>0){g_battle.battleOver=true;g_battle.playerWon=true;
+            battleLogAdd("VICTORY — all enemies routed!");
+            // 6.2: Grant veterancy to survivors with >5 kills
+            for(auto& bu:g_battle.playerUnits){
+                int topKills=0;
+                for(auto& s:bu.soldiers) if(s.alive) topKills=std::max(topKills,s.kills);
+                if(topKills>5&&bu.veterancy<3){
+                    bu.veterancy++;
+                    char vbuf[128];
+                    snprintf(vbuf,127,"[T%d] %s promoted to level %d!",
+                        g_campaign.turn,g_unitTypes[bu.typeIdx].name,bu.veterancy);
+                    battleLogAdd(vbuf);
+                }
+            }
+        }
     }
 
     // DRAW
@@ -1360,6 +2054,7 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                 g_lastResult.playerWon=g_battle.playerWon;
                 g_lastResult.playerLosses=0; g_lastResult.enemyLosses=0;
                 g_lastResult.survivors.clear();
+                g_lastResult.lootApplied=false; // 0.2: reset before entering result screen
                 for(auto& bu:g_battle.playerUnits){
                     int alive=0; for(auto& s:bu.soldiers) if(s.alive) alive++;
                     int dead=0;  for(auto& s:bu.soldiers) if(!s.alive) dead++;
@@ -1370,7 +2065,7 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                     for(auto& s:bu.soldiers) if(!s.alive) g_lastResult.enemyLosses++;
                 }
                 g_lastResult.lootGold=g_battle.playerWon&&!g_battle.isDefense?
-                    (50.f+frand()*100.f):0.f;
+                    (50.f+frandMT()*100.f):0.f;
                 g_lastResult.provinceIdx=g_battle.battleProvince;
                 g_lastResult.isDefense=g_battle.isDefense;
                 return STATE_BATTLE_RESULT;
@@ -1386,15 +2081,9 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
 // ═══════════════════════════════════════════════════════════════════════════
 static GameState updateDrawBattleResult(Vector2 mouse){
     ClearBackground({8,6,4,255});
-    // Gradient overlay
+    // Gradient overlay — single GPU call instead of per-line loop (2.1)
     Color topCol=g_lastResult.playerWon?Color{0,30,10,255}:Color{30,0,0,255};
-    for(int y2=0;y2<SCREEN_H;y2++){
-        float t=(float)y2/SCREEN_H;
-        unsigned char r2=clampU8((int)(topCol.r*(1.f-t)+C_BG.r*t));
-        unsigned char g2=clampU8((int)(topCol.g*(1.f-t)+C_BG.g*t));
-        unsigned char b2=clampU8((int)(topCol.b*(1.f-t)+C_BG.b*t));
-        DrawLine(0,y2,SCREEN_W,y2,{r2,g2,b2,255});
-    }
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,topCol,C_BG);
 
     // Title
     const char* ttl=g_lastResult.playerWon?"VICTORY":"DEFEAT";
@@ -1440,11 +2129,10 @@ static GameState updateDrawBattleResult(Vector2 mouse){
         }
     }
 
-    // Apply loot to campaign
-    static bool lootApplied=false;
-    if(!lootApplied){
+    // Apply loot to campaign (0.2: was static bool, now per-result field)
+    if(!g_lastResult.lootApplied){
         g_campaign.res.gold+=g_lastResult.lootGold;
-        lootApplied=true;
+        g_lastResult.lootApplied=true;
         // Update player army with survivors (so dead soldiers don't "resurrect")
         if(!g_quickBattle){
             g_campaign.playerArmy.clear();
@@ -1455,6 +2143,9 @@ static GameState updateDrawBattleResult(Vector2 mouse){
                     g_campaign.playerArmy.push_back({ti,cnt});
             }
             g_campaign.readyUnits=g_campaign.playerArmy;
+            // Track stats for 3.4
+            if(g_lastResult.playerWon) g_campaign.battlesWon++;
+            else g_campaign.battlesLost++;
         }
     }
 
@@ -1462,7 +2153,7 @@ static GameState updateDrawBattleResult(Vector2 mouse){
 
     // Continue button
     if(drawButton({(float)(SCREEN_W/2-140),(float)(SCREEN_H-80),280,54},"CONTINUE",mouse)){
-        lootApplied=false;
+        g_lastResult.lootApplied=false;  // reset for next battle
         if(g_quickBattle){
             g_quickBattle=false;
             return STATE_MAIN_MENU;
@@ -1609,31 +2300,49 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         }
     }
 
+    // Update explored provinces (6.3)
+    for(int i=0;i<(int)g_campaign.provinces.size()&&i<32;i++){
+        if(g_campaign.provinces[i].owner==FACTION_PLAYER) g_campaign.explored[i]=true;
+        // Adjacent to player province are also explored
+        for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent){
+            if(adj<32) g_campaign.explored[adj]=true;
+        }
+        if((int)g_campaign.playerProvince<32) g_campaign.explored[g_campaign.playerProvince]=true;
+    }
+
     // Draw provinces
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
+        bool explored=(i<32&&g_campaign.explored[i]);
         Color oc=factionColors[(int)p.owner];
-        // Province circle
+        // 6.3: Unexplored provinces rendered as dark silhouettes
+        if(!explored) oc={40,40,40,255};
         float rad=30.f;
         DrawCircleV(p.center,(int)rad,{oc.r,oc.g,oc.b,80});
         DrawCircleLines((int)p.center.x,(int)p.center.y,(int)rad,oc);
+        // 4.5: Selected province pulse
+        if(g_selectedProvince==i){
+            float pulse=rad+4.f+sinf(g_menuTime*4.f)*4.f;
+            DrawCircleLines((int)p.center.x,(int)p.center.y,(int)pulse,C_GOLD);
+        }
         // Terrain indicator
         static const char* terrIcons[4]={"~","T","^","W"};
         DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{200,200,160,200});
         // Name
         int tw=MeasureText(p.name,11);
-        DrawText(p.name,(int)(p.center.x-tw/2),(int)(p.center.y+rad+4),11,C_PARCHMENT);
+        DrawText(p.name,(int)(p.center.x-tw/2),(int)(p.center.y+rad+4),11,explored?C_PARCHMENT:Color{100,100,100,255});
         // Player marker
         if(i==g_campaign.playerProvince){
             DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad+6),C_ALLY);
             DrawText("YOU",(int)(p.center.x-12),(int)(p.center.y+rad+18),11,C_ALLY);
         }
-        // Army indicator (sum of stationed army + garrisons)
-        int total=0; for(auto [ti,c]:p.army) total+=c;
-        for(auto &gar : p.garrisonArmies) for(auto &gp:gar) total+=gp.second;
-        if(total>0){
+        // Army indicator — only if explored (6.3)
+        if(!p.army.empty()&&explored){
+            int total=0; for(auto [ti,c]:p.army) total+=c;
             DrawText(TextFormat("⚔%d",total),(int)(p.center.x-12),(int)(p.center.y-rad-16),11,
                      p.owner==FACTION_PLAYER?C_ALLY:C_ENEMY_COL);
+        } else if(!p.army.empty()&&!explored){
+            DrawText("?",(int)(p.center.x-4),(int)(p.center.y-rad-16),11,{80,80,80,255});
         }
         // Hover tooltip
         if(vdist(mouse,p.center)<rad+6){
@@ -1653,11 +2362,11 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             DrawText(TextFormat("Owner: %s",factionNames[(int)p.owner]),(int)tx,(int)ty,12,oc); ty+=15;
             if(p.hasCity) DrawText(TextFormat("City: %s",p.city.name),(int)tx,(int)ty,12,C_PARCHMENT); ty+=15;
             int tot=0; for(auto [ti,c]:p.army) tot+=c;
-            for(auto &gar: p.garrisonArmies) for(auto &gp:gar) tot+=gp.second;
             if(tot>0) DrawText(TextFormat("Army: ~%d soldiers",tot),(int)tx,(int)ty,12,C_ENEMY_COL);
 
             // Click to interact
             if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+                g_selectedProvince=i; // 4.5: track selected province
                 // Check if adjacent to player
                 bool isAdj=false;
                 for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent)
@@ -1669,10 +2378,25 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     g_campaign.viewedCity=i;
                     return STATE_CITY_MANAGEMENT;
                 } else if(isAdj){
-                    // Schedule a move: do not move immediately, set pending move that will execute on END TURN
-                    g_campaign.pendingMoveTarget = i;
-                    g_campaign.pendingMoveTurns = 1; // cost in turns (adjacent)
-                    // Informative: we keep in campaign map; actual move will happen after pressing END TURN
+                    if(p.owner==FACTION_PLAYER){
+                        // Move to this province
+                        g_campaign.playerProvince=i;
+                        g_campaign.turn++;
+                    } else {
+                        // Initiate battle
+                        g_preBattle.provinceIdx=i;
+                        g_preBattle.isDefense=false;
+                        g_preBattle.fogOfWar=(p.owner!=FACTION_NEUTRAL);
+                        g_preBattle.estimatedEnemyStrength=0;
+                        for(auto [ti,c]:p.army) g_preBattle.estimatedEnemyStrength+=c;
+                        g_preBattle.estimatedEnemyStrength+=(int)((frandMT()-0.5f)*20);
+                        g_preBattle.include.clear();
+                        g_preBattle.include.resize(g_campaign.readyUnits.size(),false);
+                        // Auto-select all by default
+                        for(int j=0;j<std::min((int)g_preBattle.include.size(),12);j++)
+                            g_preBattle.include[j]=true;
+                        return STATE_PRE_BATTLE;
+                    }
                 }
             }
         }
@@ -1684,12 +2408,6 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     Resources& r=g_campaign.res;
     DrawText(TextFormat("Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
              r.gold,r.food,r.wood,r.stone,r.iron),100,10,13,C_PARCHMENT);
-    // Pending move info
-    if(g_campaign.pendingMoveTarget>=0 && g_campaign.pendingMoveTarget<(int)g_campaign.provinces.size()){
-        DrawText(TextFormat("Pending move -> %s (%d turns)",
-                 g_campaign.provinces[g_campaign.pendingMoveTarget].name,
-                 g_campaign.pendingMoveTurns),SCREEN_W-420,10,12,C_PARCHMENT);
-    }
 
     // Bottom buttons
     DrawRectangle(0,SCREEN_H-50,SCREEN_W,50,{0,0,0,210});
@@ -1718,8 +2436,6 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     c.constructing=-1;
                 }
             }
-
-        // Recruitment progress for this city's queued entries will be processed globally after resources
         }
         // Maintenance
         for(auto [ti,cnt]:g_campaign.readyUnits){
@@ -1733,120 +2449,104 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             }
             if(r.food<0) r.food=0;
         }
+        // 3.3: Improved enemy AI — weighted decisions, escalating aggression
+        float aggression=0.05f+0.02f*(float)g_campaign.turn/10.f;
+        aggression=std::min(aggression,0.4f);
+        // Apply difficulty multiplier
+        static const float diffMult[3]={0.7f,1.0f,1.4f};
+        aggression*=diffMult[std::max(0,std::min(2,g_settings.difficulty))];
 
-        // Process recruitment queue: decrement turns, move completed recruits to their city's army
-        for(int i=(int)g_campaign.recruitQueue.size()-1;i>=0;i--){
-            RecruitEntry &qe = g_campaign.recruitQueue[i];
-            qe.turnsLeft--;
-            if(qe.turnsLeft<=0){
-                if(qe.provinceIdx>=0 && qe.provinceIdx<(int)g_campaign.provinces.size()){
-                    Province &pp = g_campaign.provinces[qe.provinceIdx];
-                    // add soldiers count = unit.soldierCount * qe.count
-                    int adds = qe.count * ( (qe.typeIdx>=0 && qe.typeIdx<unitTypeCount()) ? g_unitTypes[qe.typeIdx].soldierCount : 0);
-                    if(adds>0){
-                        bool found=false;
-                        for(auto &ap : pp.army){ if(ap.first==qe.typeIdx){ ap.second+=adds; found=true; break; } }
-                        if(!found) pp.army.push_back({qe.typeIdx,adds});
-                        // If this is the player's current province, also add to readyUnits pool
-                        if(qe.provinceIdx==g_campaign.playerProvince){
-                            bool rf=false;
-                            for(auto &ru: g_campaign.readyUnits){ if(ru.first==qe.typeIdx){ ru.second+=adds; rf=true; break; } }
-                            if(!rf) g_campaign.readyUnits.push_back({qe.typeIdx,adds});
-                        }
-                    }
+        // Coalition detection: pairs of enemies both adjacent to player attack same turn
+        std::vector<int> coalitionAttackers;
+        for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
+            Province& ep2=g_campaign.provinces[pi2];
+            if(ep2.owner==FACTION_NEUTRAL||ep2.owner==FACTION_PLAYER) continue;
+            bool adjPlayer=false;
+            for(int adj2:ep2.adjacent) if(g_campaign.provinces[adj2].owner==FACTION_PLAYER) adjPlayer=true;
+            if(!adjPlayer) continue;
+            // Find coalition partner
+            for(int adj2:ep2.adjacent){
+                Province& ep3=g_campaign.provinces[adj2];
+                if(ep3.owner!=ep2.owner) continue;
+                bool partnerAdjPlayer=false;
+                for(int adj3:ep3.adjacent) if(g_campaign.provinces[adj3].owner==FACTION_PLAYER) partnerAdjPlayer=true;
+                if(partnerAdjPlayer){
+                    coalitionAttackers.push_back(pi2);
+                    break;
                 }
-                g_campaign.recruitQueue.erase(g_campaign.recruitQueue.begin()+i);
-            }
-        }
-        // Process player pending move
-        if(g_campaign.pendingMoveTarget>=0){
-            g_campaign.pendingMoveTurns--;
-            if(g_campaign.pendingMoveTurns<=0){
-                int tgt=g_campaign.pendingMoveTarget;
-                if(tgt>=0 && tgt<(int)g_campaign.provinces.size()){
-                    Province &dest=g_campaign.provinces[tgt];
-                    if(dest.owner==FACTION_PLAYER){
-                        // simple move
-                        g_campaign.playerProvince=tgt;
-                    } else {
-                        // initiate pre-battle on arrival
-                        g_preBattle.provinceIdx=tgt;
-                        g_preBattle.isDefense=false;
-                        g_preBattle.fogOfWar=(dest.owner!=FACTION_NEUTRAL);
-                        g_preBattle.estimatedEnemyStrength=0;
-                        for(auto [ti,c]:dest.army) g_preBattle.estimatedEnemyStrength+=c;
-                        g_preBattle.estimatedEnemyStrength+=(int)((frand()-0.5f)*20);
-                        g_preBattle.include.clear();
-                        g_preBattle.include.resize(g_campaign.readyUnits.size(),false);
-                        for(int j=0;j<std::min((int)g_preBattle.include.size(),12);j++) g_preBattle.include[j]=true;
-                        g_campaign.pendingMoveTarget=-1; g_campaign.pendingMoveTurns=0;
-                        return STATE_PRE_BATTLE;
-                    }
-                }
-                g_campaign.pendingMoveTarget=-1; g_campaign.pendingMoveTurns=0;
             }
         }
 
-        // Process enemy scheduled movements: decrement and execute arrivals
-        for(int pi=0;pi<(int)g_campaign.provinces.size();pi++){
-            Province &ep=g_campaign.provinces[pi];
-            if(ep.moveTurnsRemaining>0){
-                ep.moveTurnsRemaining--;
-                if(ep.moveTurnsRemaining<=0 && ep.movingTo>=0){
-                    int dst=ep.movingTo;
-                    if(dst>=0 && dst<(int)g_campaign.provinces.size()){
-                        Province &target=g_campaign.provinces[dst];
-                        // If target is player-owned -> initiate pre-battle
-                        if(target.owner==FACTION_PLAYER){
-                            // move army as attacker
-                            g_preBattle.provinceIdx=dst;
-                            g_preBattle.isDefense=true;
-                            g_preBattle.fogOfWar=false;
-                            g_preBattle.estimatedEnemyStrength=0;
-                            for(auto [ti,c]:ep.movingArmy) g_preBattle.estimatedEnemyStrength+=c;
-                            g_preBattle.include.clear();
-                            g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
-                            for(int j=12;j<(int)g_preBattle.include.size();j++) g_preBattle.include[j]=false;
-                            // set target's army to the attacker's moving army temporarily
-                            g_campaign.provinces[dst].army = ep.movingArmy;
-                            ep.movingArmy.clear(); ep.movingTo=-1;
-                            return STATE_PRE_BATTLE;
-                        } else {
-                            // occupy or reinforce target
-                            for(auto &ap: ep.movingArmy){
-                                bool found=false;
-                                for(auto &tp: target.army){ if(tp.first==ap.first){ tp.second+=ap.second; found=true; break; } }
-                                if(!found) target.army.push_back(ap);
-                            }
-                            ep.movingArmy.clear(); ep.movingTo=-1;
-                        }
-                    }
-                }
-            }
-        }
-        // Enemy AI: occasionally attack
-        // Simple: 10% chance per enemy province to move toward player
-        for(int pi=0;pi<(int)g_campaign.provinces.size();pi++){
-            Province& ep=g_campaign.provinces[pi];
+        for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
+            Province& ep=g_campaign.provinces[pi2];
             if(ep.owner==FACTION_NEUTRAL||ep.owner==FACTION_PLAYER) continue;
-            if(rand()%10==0){
-                // Find adjacent player province
+
+            // Random decision weighted by heuristics
+            float roll=frandMT();
+
+            bool inCoalition=false;
+            for(int ca:coalitionAttackers) if(ca==pi2){inCoalition=true;break;}
+            float attackChance=inCoalition?aggression*2.f:aggression;
+
+            if(roll<attackChance*0.4f){
+                // Attack weak neighbor
                 for(int adj:ep.adjacent){
                     if(g_campaign.provinces[adj].owner==FACTION_PLAYER){
-                        // Check strength ratio
                         int eStr=0; for(auto [ti,c]:ep.army) eStr+=c;
-                        int pStr=0; for(auto [ti,c]:g_campaign.provinces[adj].army) pStr+=c;
-                        pStr+=(int)g_campaign.readyUnits.size()*40; // player has troops
-                        if(eStr>(int)(pStr*1.4f)){
-                            // Schedule attack movement (do not resolve immediately)
-                            ep.movingTo = adj;
-                            ep.moveTurnsRemaining = 1; // adjacent
-                            ep.movingArmy = ep.army; // copy moving force
-                            ep.army.clear(); // remove from origin while moving
-                            // do not return here; movement will resolve at end-turn
+                        int pStr=(int)g_campaign.readyUnits.size()*40;
+                        if(eStr>(int)(pStr*1.2f)){
+                            g_preBattle.provinceIdx=adj;
+                            g_preBattle.isDefense=true;
+                            g_preBattle.fogOfWar=false;
+                            g_preBattle.estimatedEnemyStrength=eStr;
+                            g_preBattle.include.clear();
+                            g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
+                            for(int j=12;j<(int)g_preBattle.include.size();j++)
+                                g_preBattle.include[j]=false;
+                            g_campaign.provinces[adj].army=ep.army;
+                            g_campaign.battlesLost=g_campaign.battlesLost; // no change yet
+                            return STATE_PRE_BATTLE;
                         }
+                        break;
                     }
                 }
+            } else if(roll<attackChance*0.4f+0.2f){
+                // Reinforcement transfer between adjacent enemy provinces
+                for(int adj:ep.adjacent){
+                    Province& ap=g_campaign.provinces[adj];
+                    if(ap.owner!=ep.owner||ap.army.empty()) continue;
+                    int apStr=0; for(auto [ti,c]:ap.army) apStr+=c;
+                    int epStr=0; for(auto [ti,c]:ep.army) epStr+=c;
+                    if(apStr>epStr+20&&!ap.army.empty()){
+                        // Transfer one unit group
+                        auto& transferUnit=ap.army.front();
+                        int transferAmt=transferUnit.second/4;
+                        if(transferAmt>0){
+                            bool found=false;
+                            for(auto& eu:ep.army) if(eu.first==transferUnit.first){eu.second+=transferAmt;found=true;break;}
+                            if(!found) ep.army.push_back({transferUnit.first,transferAmt});
+                            transferUnit.second-=transferAmt;
+                            if(transferUnit.second<=0) ap.army.erase(ap.army.begin());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3.4: Check victory condition (player owns 80% of provinces)
+        {
+            int totalProv=(int)g_campaign.provinces.size();
+            int playerProv=0;
+            for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+            g_campaign.peakProvinces=std::max(g_campaign.peakProvinces,playerProv);
+            if(playerProv>=(int)(totalProv*0.8f)){
+                battleLogAdd("[Campaign] VICTORY! Empire established!");
+                return STATE_VICTORY;
+            }
+            if(playerProv==0){
+                battleLogAdd("[Campaign] DEFEAT — all provinces lost!");
+                return STATE_DEFEAT;
             }
         }
     }
@@ -2048,12 +2748,11 @@ static GameState updateDrawRecruitment(Vector2 mouse){
             DrawText(TextFormat("%d soldiers",td.soldierCount),(int)(leftW-150),(int)(ry+22),11,C_SECONDARY);
             bool canAfford=(res.gold>=td.recruitGold&&res.food>=td.recruitFood&&res.iron>=td.recruitIron);
             Rectangle addBtn={leftW-80,ry+6,72,26};
-                if(drawSmBtn(addBtn,"RECRUIT",mouse,
+            if(drawSmBtn(addBtn,"RECRUIT",mouse,
                          canAfford?Color{20,50,20,255}:Color{30,20,20,255},
                          canAfford?Color{40,90,38,255}:Color{30,20,20,255})&&canAfford){
                 res.gold-=td.recruitGold; res.food-=td.recruitFood; res.iron-=td.recruitIron;
-                RecruitEntry e; e.typeIdx=t; e.turnsLeft=td.recruitTurns; e.provinceIdx=g_campaign.viewedCity; e.count=1;
-                g_campaign.recruitQueue.push_back(e);
+                g_campaign.recruitQueue.push_back({t,td.recruitTurns,td.recruitTurns});
             }
         } else {
             // Show requirements
@@ -2080,6 +2779,12 @@ static GameState updateDrawRecruitment(Vector2 mouse){
         if(ry+30>SCREEN_H/2) break;
         DrawText(g_unitTypes[e.typeIdx].name,(int)(rx+10),(int)(ry+6),13,C_ALLY);
         DrawText(TextFormat("%d turn(s)",e.turnsLeft),(int)(rx+rightW-80),(int)(ry+6),12,C_SECONDARY);
+        // 4.3: Progress bar
+        int orig=e.originalTurns>0?e.originalTurns:1;
+        float progress=1.f-(float)e.turnsLeft/(float)orig;
+        float pbW=rightW-100.f;
+        DrawRectangle((int)(rx+10),(int)(ry+20),(int)pbW,5,DARKGRAY);
+        DrawRectangle((int)(rx+10),(int)(ry+20),(int)(pbW*progress),5,{80,160,80,255});
     }
     if(g_campaign.recruitQueue.empty())
         DrawText("(empty)",(int)(rx+10),(int)100,12,C_SECONDARY);
@@ -2144,6 +2849,7 @@ static GameState updateDrawUnitCodex(Vector2 mouse,float dt){
     }
 
     // Right content
+    if(g_codexIdx>=nc) return STATE_UNIT_CODEX; // 1.6: bounds check
     if(g_codexIdx<nc){
         const UnitTypeDef& td=g_unitTypes[g_codexIdx];
         float cx=contentX, cy=58.f;
@@ -2157,8 +2863,9 @@ static GameState updateDrawUnitCodex(Vector2 mouse,float dt){
                           {td.r,td.g,td.b,255},false);
         DrawCircleLines((int)sprCenter.x,(int)sprCenter.y,55,{80,70,50,80});
 
-        // Lore
-        DrawText(td.lore,(int)cx,(int)cy,12,C_SECONDARY); cy+=30;
+        // Lore — word wrapped (3.8)
+        drawWrappedText(td.lore,(int)cx,(int)cy,(int)(SCREEN_W-contentX-120),12,C_SECONDARY);
+        cy+=30;
 
         // Stats table
         DrawText(TextFormat("Soldiers: %d",td.soldierCount),(int)cx,(int)cy,13,C_PARCHMENT); cy+=18;
@@ -2201,21 +2908,65 @@ static GameState updateDrawUnitCodex(Vector2 mouse,float dt){
 // ═══════════════════════════════════════════════════════════════════════════
 static GameState updateDrawSettings(Vector2 mouse){
     ClearBackground(C_BG);
-    DrawText("SETTINGS",SCREEN_W/2-MeasureText("SETTINGS",32)/2,40,32,C_GOLD);
-    DrawText("(No persistent settings in this build)",
-             SCREEN_W/2-MeasureText("(No persistent settings in this build)",14)/2,
-             120,14,C_SECONDARY);
-    DrawText("F11 / Alt+Enter: Toggle Fullscreen",
-             SCREEN_W/2-MeasureText("F11 / Alt+Enter: Toggle Fullscreen",14)/2,
-             160,14,C_PARCHMENT);
-    if(drawButton({(float)(SCREEN_W/2-120),(float)(SCREEN_H/2+60),240,50},"BACK",mouse,
-                  {50,25,25,255},{90,40,40,255})) return STATE_MAIN_MENU;
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{10,8,6,255},C_BG);
+    int tw2=MeasureText("SETTINGS",32);
+    DrawText("SETTINGS",SCREEN_W/2-tw2/2,30,32,C_GOLD);
+    DrawLine(SCREEN_W/2-200,72,SCREEN_W/2+200,72,C_GOLD);
+
+    float cx=(float)(SCREEN_W/2-250), cw=500.f, cy=90.f;
+
+    // Master Volume
+    DrawText("Master Volume",(int)cx,(int)(cy-14),12,C_SECONDARY);
+    g_settings.masterVolume=drawFloatSlider({cx,cy,cw,14},g_settings.masterVolume,0.f,1.f,"","%.2f",mouse,{80,160,80,200});
+    cy+=36;
+
+    // Music Volume
+    DrawText("Music Volume",(int)cx,(int)(cy-14),12,C_SECONDARY);
+    g_settings.musicVolume=drawFloatSlider({cx,cy,cw,14},g_settings.musicVolume,0.f,1.f,"","%.2f",mouse,{80,120,180,200});
+    cy+=36;
+
+    // Difficulty
+    DrawText("Difficulty:",(int)cx,(int)cy,14,C_SECONDARY); cy+=20;
+    static const char* diffNames[]={"EASY","NORMAL","HARD"};
+    for(int d=0;d<3;d++){
+        float bx=cx+d*120.f;
+        bool sel=(g_settings.difficulty==d);
+        Color bc=sel?Color{40,80,40,255}:Color{20,30,20,255};
+        Color bh=sel?Color{60,120,60,255}:Color{35,55,35,255};
+        if(drawSmBtn({bx,cy,110,30},diffNames[d],mouse,bc,bh)) g_settings.difficulty=d;
+        if(sel) DrawRectangleLinesEx({bx,cy,110,30},2,C_GOLD);
+    }
+    cy+=46;
+
+    // Show FPS checkbox
+    Rectangle cbr={(float)cx,cy,20,20};
+    bool cbhv=ptInRect(mouse,cbr);
+    DrawRectangleRec(cbr,g_settings.showFPS?Color{40,80,40,255}:cbhv?Color{25,45,25,255}:Color{15,25,15,220});
+    DrawRectangleLinesEx(cbr,1,g_settings.showFPS?C_GOLD:Color{60,90,40,255});
+    if(g_settings.showFPS) DrawText("✓",(int)(cx+4),(int)(cy+2),14,C_GOLD);
+    DrawText("Show FPS Counter",(int)(cx+28),(int)(cy+2),14,C_SECONDARY);
+    if(cbhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_settings.showFPS=!g_settings.showFPS;
+    cy+=36;
+
+    // F11 hint
+    DrawText("F11 / Alt+Enter: Toggle Fullscreen",(int)cx,(int)cy,13,C_PARCHMENT);
+    cy+=28;
+
+    // Save button
+    if(drawButton({(float)(SCREEN_W/2-160),(float)(cy+10),160,44},"SAVE",mouse,{30,60,30,255},{50,100,50,255})){
+        saveSettings();
+    }
+    if(drawButton({(float)(SCREEN_W/2+8),(float)(cy+10),160,44},"BACK",mouse,{50,25,25,255},{90,40,40,255})){
+        saveSettings();
+        return STATE_MAIN_MENU;
+    }
     return STATE_SETTINGS;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: UNIT EDITOR (sandbox, from main menu)
 // ═══════════════════════════════════════════════════════════════════════════
+static Texture2D g_editorPrevTex={0};
 static void rebuildEditorPreview(){
     if(g_editorPrevTex.id>0) UnloadTexture(g_editorPrevTex);
     g_editorPrevTex={0};
@@ -2265,21 +3016,6 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         DrawRectangle((int)(lx+4),(int)(ly+4),12,12,{cur.r,cur.g,cur.b,255});
         DrawText(cur.name,(int)(lx+20),(int)(ly+4),13,WHITE);
         if(dHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_editorDropdownOpen=!g_editorDropdownOpen;
-        // New type button
-        Rectangle newBtn={(float)(lx+leftW-120),ly,110,24};
-        if(drawSmBtn(newBtn,"NEW TYPE",mouse,{30,30,60,255},{60,60,110,255})){
-            UnitTypeDef t{};
-            strncpy(t.name,"New Unit",31);
-            t.soldierCount=10; t.hpPerSoldier=10.f; t.armor=0; t.speed=80;
-            t.meleeAttack=10; t.meleeDefense=8; t.meleeBaseDmg=6.f; t.meleeAPDmg=0.f; t.meleeInterval=1.5f;
-            t.range=0; t.missileBaseDmg=0.f; t.missileAPDmg=0.f; t.missileReload=0.f;
-            t.recruitGold=100; t.recruitFood=20; t.recruitIron=0; t.recruitTurns=1;
-            t.maintGold=5; t.maintFood=2; t.morale=80.f;
-            t.r=160; t.g=160; t.b=160; t.spriteBase=SPR_INFANTRY; t.weaponHint=0; t.isBuiltin=false; t.buildingReqs=-1;
-            g_unitTypes.push_back(t);
-            g_editTypeIdx=(int)g_unitTypes.size()-1;
-            g_editorPreviewDirty=true; rebuildEditorPreview();
-        }
         if(g_editorDropdownOpen){
             float oy=ly+26;
             for(int i=0;i<unitTypeCount();i++){
@@ -2345,65 +3081,12 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
             td.r=(unsigned char)nr; td.g=(unsigned char)ng; td.b=(unsigned char)nb; changed=true;
         }
 
-        // Sprite base selector
-        DrawText("Sprite:",(int)lx,(int)ly,11,C_SECONDARY); ly+=14;
-        if(drawSmBtn({lx,ly,90,20},"Infantry",mouse)) { if(td.spriteBase!=SPR_INFANTRY){ td.spriteBase=SPR_INFANTRY; changed=true; } }
-        if(drawSmBtn({lx+98,ly,90,20},"Ranged",mouse))    { if(td.spriteBase!=SPR_RANGED){ td.spriteBase=SPR_RANGED; changed=true; } }
-        if(drawSmBtn({lx+196,ly,90,20},"Cavalry",mouse))  { if(td.spriteBase!=SPR_CAVALRY){ td.spriteBase=SPR_CAVALRY; changed=true; } }
-        ly+=28;
-
         if(changed){ rebuildTexture(g_editTypeIdx); g_editorPreviewDirty=true; }
         if(g_editorPreviewDirty){ rebuildEditorPreview(); g_editorPreviewDirty=false; }
 
         // Right panel
         float rx=(float)rightX, ry=(float)panelY;
         DrawText(td.name,(int)(rx+10),(int)(ry+10),16,SKYBLUE);
-        // Rename / delete controls
-        static bool editingName=false;
-        static char nameBuf[64]={0};
-        if(!editingName) strncpy(nameBuf,td.name,63);
-        Rectangle nameBox={(float)(rx+200),(float)(ry+6),220,22};
-        if(editingName){
-            DrawRectangleRec(nameBox,Color{30,30,30,255});
-            DrawRectangleLinesEx(nameBox,1,C_GOLD);
-            // capture input
-            int cp=GetCharPressed();
-            while(cp>0){
-                int c=cp;
-                if(c>=32 && c<127 && (int)strlen(nameBuf)<62){ size_t l=strlen(nameBuf); nameBuf[l]=(char)c; nameBuf[l+1]='\0'; }
-                cp=GetCharPressed();
-            }
-            if(IsKeyPressed(KEY_BACKSPACE) && strlen(nameBuf)>0) nameBuf[strlen(nameBuf)-1]='\0';
-            DrawText(nameBuf,(int)(nameBox.x+6),(int)(nameBox.y+3),12,WHITE);
-            DrawText("[Enter] to finish",(int)(nameBox.x+6),(int)(nameBox.y+26),10,C_SECONDARY);
-            if(IsKeyPressed(KEY_ENTER)){
-                strncpy(td.name,nameBuf,31);
-                editingName=false;
-                rebuildTexture(g_editTypeIdx);
-            }
-        } else {
-            DrawRectangleLinesEx(nameBox,1,Color{40,40,40,255});
-            DrawText(td.name,(int)(nameBox.x+6),(int)(nameBox.y+3),12,C_PARCHMENT);
-            if(drawSmBtn({nameBox.x+232,nameBox.y,72,22},"RENAME",GetMousePosition(),{30,30,60,255},{60,60,110,255})){
-                editingName=true; strncpy(nameBuf,td.name,63);
-            }
-        }
-        // Delete custom unit
-        if(!td.isBuiltin){
-            if(drawSmBtn({(float)(rx+rightW-120),(float)(ry+6),110,22},"DELETE",GetMousePosition(),{60,20,20,255},{100,40,40,255})){
-                // remove unit type and rebuild textures
-                int delIdx=g_editTypeIdx;
-                if(delIdx>=0 && delIdx<unitTypeCount()){
-                    g_unitTypes.erase(g_unitTypes.begin()+delIdx);
-                    // remove textures if present
-                    if(delIdx<(int)g_playerTextures.size()){ UnloadTexture(g_playerTextures[delIdx]); g_playerTextures.erase(g_playerTextures.begin()+delIdx); }
-                    if(delIdx<(int)g_enemyTextures.size()){ UnloadTexture(g_enemyTextures[delIdx]); g_enemyTextures.erase(g_enemyTextures.begin()+delIdx); }
-                    if(g_editTypeIdx>=(int)g_unitTypes.size()) g_editTypeIdx=(int)g_unitTypes.size()-1;
-                    // rebuild all textures to keep indices consistent
-                    g_playerTextures.clear(); g_enemyTextures.clear(); for(int i=0;i<(int)g_unitTypes.size();i++) rebuildTexture(i);
-                }
-            }
-        }
         DrawLine((int)rx,(int)(ry+32),(int)(rx+rightW),(int)(ry+32),{50,50,110,80});
 
         if(g_editorPrevTex.id>0){
@@ -2538,8 +3221,6 @@ static GameState updateDrawQuickBattleSetup(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: MAIN MENU
 // ═══════════════════════════════════════════════════════════════════════════
-static bool loadGame();
-
 static GameState updateDrawMainMenu(Vector2 mouse){
     ClearBackground({6,8,6,255});
     // Fog rects
@@ -2601,8 +3282,7 @@ static GameState updateDrawMainMenu(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  SAVE / LOAD — Campaign persistence in dedicated file
 // ═══════════════════════════════════════════════════════════════════════════
-static const char* CAMPAIGN_SAVE_FILE = "campaign_save.dat";
-static const int SAVE_VERSION = 4;
+// (CAMPAIGN_SAVE_FILE and SAVE_VERSION defined at top of file)
 
 static void saveGame(){
     FILE* f=fopen(CAMPAIGN_SAVE_FILE,"wb");
@@ -2637,17 +3317,6 @@ static void saveGame(){
         int narmy=(int)p.army.size();
         fwrite(&narmy,sizeof(int),1,f);
         for(auto& ap : p.army){ fwrite(&ap.first,sizeof(int),1,f); fwrite(&ap.second,sizeof(int),1,f); }
-        // Garrison armies
-        int ngarr=(int)p.garrisonArmies.size(); fwrite(&ngarr,sizeof(int),1,f);
-        for(auto &gar: p.garrisonArmies){
-            int gsz=(int)gar.size(); fwrite(&gsz,sizeof(int),1,f);
-            for(auto &gp: gar){ fwrite(&gp.first,sizeof(int),1,f); fwrite(&gp.second,sizeof(int),1,f); }
-        }
-        // Movement state
-        fwrite(&p.movingTo,sizeof(int),1,f);
-        fwrite(&p.moveTurnsRemaining,sizeof(int),1,f);
-        int msz=(int)p.movingArmy.size(); fwrite(&msz,sizeof(int),1,f);
-        for(auto &mp: p.movingArmy){ fwrite(&mp.first,sizeof(int),1,f); fwrite(&mp.second,sizeof(int),1,f); }
     }
 
     int nq=(int)g_campaign.recruitQueue.size();
@@ -2655,8 +3324,6 @@ static void saveGame(){
     for(auto& e:g_campaign.recruitQueue){
         fwrite(&e.typeIdx,sizeof(int),1,f);
         fwrite(&e.turnsLeft,sizeof(int),1,f);
-        fwrite(&e.provinceIdx,sizeof(int),1,f);
-        fwrite(&e.count,sizeof(int),1,f);
     }
 
     int na=(int)g_campaign.playerArmy.size();
@@ -2672,9 +3339,6 @@ static void saveGame(){
         fwrite(&r.first,sizeof(int),1,f);
         fwrite(&r.second,sizeof(int),1,f);
     }
-    // pending player move
-    fwrite(&g_campaign.pendingMoveTarget,sizeof(int),1,f);
-    fwrite(&g_campaign.pendingMoveTurns,sizeof(int),1,f);
 
     fclose(f);
     g_hasSave=true;
@@ -2727,33 +3391,15 @@ static bool loadGame(){
             if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
             p.army.push_back({ti,cnt});
         }
-        // Load garrison armies
-        int ngarr=0;
-        if(fread(&ngarr,sizeof(int),1,f)!=1||ngarr<0||ngarr>128){ fclose(f); return false; }
-        p.garrisonArmies.clear();
-        for(int ga=0;ga<ngarr;ga++){
-            int gsz=0; if(fread(&gsz,sizeof(int),1,f)!=1||gsz<0||gsz>256){ fclose(f); return false; }
-            std::vector<std::pair<int,int>> gar;
-            for(int k=0;k<gsz;k++){ int ti=0,cnt=0; if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; } gar.push_back({ti,cnt}); }
-            p.garrisonArmies.push_back(gar);
-        }
-        // Movement state
-        if(fread(&p.movingTo,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        if(fread(&p.moveTurnsRemaining,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        int msz=0; if(fread(&msz,sizeof(int),1,f)!=1||msz<0||msz>512){ fclose(f); return false; }
-        p.movingArmy.clear();
-        for(int mi=0;mi<msz;mi++){ int ti=0,cnt=0; if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; } p.movingArmy.push_back({ti,cnt}); }
     }
 
     int nq=0;
     if(fread(&nq,sizeof(int),1,f)!=1||nq<0||nq>256){ fclose(f); return false; }
     g_campaign.recruitQueue.clear();
     for(int i=0;i<nq;i++){
-        int ti=0,tl=0,pi=0,cnt=0;
+        int ti=0,tl=0;
         if(fread(&ti,sizeof(int),1,f)!=1||fread(&tl,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        if(fread(&pi,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        RecruitEntry e; e.typeIdx=ti; e.turnsLeft=tl; e.provinceIdx=pi; e.count=cnt;
-        g_campaign.recruitQueue.push_back(e);
+        g_campaign.recruitQueue.push_back({ti,tl});
     }
 
     int na=0;
@@ -2773,13 +3419,77 @@ static bool loadGame(){
         if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
         g_campaign.readyUnits.push_back({ti,cnt});
     }
-    // pending player move
-    if(fread(&g_campaign.pendingMoveTarget,sizeof(int),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.pendingMoveTurns,sizeof(int),1,f)!=1){ fclose(f); return false; }
 
     fclose(f);
     updateProvinceCenters();
+    g_campaign.playerArmy = g_campaign.readyUnits; // 1.4: sync after load
     return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STATE: VICTORY
+// ═══════════════════════════════════════════════════════════════════════════
+static GameState updateDrawVictory(Vector2 mouse){
+    ClearBackground({5,10,5,255});
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{0,40,10,255},{5,10,5,255});
+    // Title
+    const char* ttl="VICTORY!";
+    int tsz=72;
+    int ttw=MeasureText(ttl,tsz);
+    DrawText(ttl,SCREEN_W/2-ttw/2+4,60+4,tsz,{0,60,0,160});
+    DrawText(ttl,SCREEN_W/2-ttw/2,60,tsz,{80,220,80,255});
+    DrawLine(SCREEN_W/2-250,145,SCREEN_W/2+250,145,C_GOLD);
+
+    DrawText("Your empire now dominates the realm!",
+             SCREEN_W/2-MeasureText("Your empire now dominates the realm!",18)/2,
+             165,18,C_PARCHMENT);
+
+    // Stats
+    float sy=210.f;
+    DrawText(TextFormat("Final Turn: %d",g_campaign.turn),(int)(SCREEN_W/2-200),(int)sy,15,C_SECONDARY); sy+=24;
+    DrawText(TextFormat("Battles Won: %d",g_campaign.battlesWon),(int)(SCREEN_W/2-200),(int)sy,15,C_PARCHMENT); sy+=24;
+    DrawText(TextFormat("Battles Lost: %d",g_campaign.battlesLost),(int)(SCREEN_W/2-200),(int)sy,15,C_SECONDARY); sy+=24;
+    DrawText(TextFormat("Peak Provinces Held: %d",g_campaign.peakProvinces),(int)(SCREEN_W/2-200),(int)sy,15,C_GOLD); sy+=40;
+
+    if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"NEW CAMPAIGN",mouse,{30,65,30,255},{55,110,50,255})){
+        newCampaign();
+        return STATE_CAMPAIGN_MAP;
+    }
+    if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
+        return STATE_MAIN_MENU;
+    return STATE_VICTORY;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STATE: DEFEAT
+// ═══════════════════════════════════════════════════════════════════════════
+static GameState updateDrawDefeat(Vector2 mouse){
+    ClearBackground({10,5,5,255});
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{40,0,0,255},{10,5,5,255});
+    const char* ttl="DEFEAT";
+    int tsz=72;
+    int ttw=MeasureText(ttl,tsz);
+    DrawText(ttl,SCREEN_W/2-ttw/2+4,60+4,tsz,{60,0,0,160});
+    DrawText(ttl,SCREEN_W/2-ttw/2,60,tsz,{220,60,60,255});
+    DrawLine(SCREEN_W/2-250,145,SCREEN_W/2+250,145,C_COPPER);
+
+    DrawText("Your kingdom has fallen. The realm mourns.",
+             SCREEN_W/2-MeasureText("Your kingdom has fallen. The realm mourns.",16)/2,
+             165,16,C_SECONDARY);
+
+    float sy=210.f;
+    DrawText(TextFormat("Final Turn: %d",g_campaign.turn),(int)(SCREEN_W/2-200),(int)sy,15,C_SECONDARY); sy+=24;
+    DrawText(TextFormat("Battles Won: %d",g_campaign.battlesWon),(int)(SCREEN_W/2-200),(int)sy,15,C_PARCHMENT); sy+=24;
+    DrawText(TextFormat("Battles Lost: %d",g_campaign.battlesLost),(int)(SCREEN_W/2-200),(int)sy,15,C_ENEMY_COL); sy+=24;
+    DrawText(TextFormat("Peak Provinces Held: %d",g_campaign.peakProvinces),(int)(SCREEN_W/2-200),(int)sy,15,C_SECONDARY); sy+=40;
+
+    if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"TRY AGAIN",mouse,{55,20,20,255},{90,35,35,255})){
+        newCampaign();
+        return STATE_CAMPAIGN_MAP;
+    }
+    if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
+        return STATE_MAIN_MENU;
+    return STATE_DEFEAT;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2789,6 +3499,10 @@ int main(){
     InitWindow(SCREEN_W,SCREEN_H,"Medieval Conquest");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
+
+    srand((unsigned)time(nullptr)); // 1.2: seed for any remaining rand() calls
+    loadSettings();                  // 3.1: load persistent settings
+    g_battleLog.clear();
 
     initBuiltinTypes();
     rebuildEditorPreview();
@@ -2855,9 +3569,33 @@ int main(){
             case STATE_QUICK_BATTLE_SETUP:
                 g_state=updateDrawQuickBattleSetup(mouse);
                 break;
+            case STATE_VICTORY:
+                g_state=updateDrawVictory(mouse);
+                break;
+            case STATE_DEFEAT:
+                g_state=updateDrawDefeat(mouse);
+                break;
         }
+        // 4.9: Global FPS (shown in non-battle states too)
+        if(g_settings.showFPS&&g_state!=STATE_BATTLE) DrawFPS(8,8);
+
+        // 4.10: Custom medieval cursor (cross-hair style)
+        HideCursor();
+        Vector2 cur=GetMousePosition();
+        Color curCol=C_GOLD;
+        if(g_state==STATE_BATTLE||g_state==STATE_PRE_BATTLE) curCol=C_ALLY;
+        else if(g_state==STATE_CAMPAIGN_MAP) curCol={80,220,80,255};
+        int csz=6;
+        DrawLine((int)cur.x-csz,(int)cur.y,(int)cur.x+csz,(int)cur.y,curCol);
+        DrawLine((int)cur.x,(int)cur.y-csz,(int)cur.x,(int)cur.y+csz,curCol);
+        DrawRectangleLines((int)cur.x-2,(int)cur.y-2,4,4,{curCol.r,curCol.g,curCol.b,180});
+
         EndDrawing();
+
+        // 4.10: Custom medieval cursor drawn after EndDrawing is handled by Raylib's software cursor
     }
+
+    ShowCursor();  // 4.10: restore cursor on exit
 
     // Cleanup textures
     for(auto& t:g_playerTextures) UnloadTexture(t);
