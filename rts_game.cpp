@@ -20,8 +20,17 @@
 // ───────────────────────────────────────────────────────────────────────────
 //  SAVE FILE CONSTANTS (must be before forward declarations)
 // ───────────────────────────────────────────────────────────────────────────
-static const char* CAMPAIGN_SAVE_FILE = "campaign_save.dat";
-static const int   SAVE_VERSION       = 4;  // bumped for new fields
+static const char* CAMPAIGN_LAST_FILE = "campaign_last.dat";
+static const int   SAVE_VERSION       = 5;  // bumped for campaignId + province nx/ny
+static const int   MAX_CAMPAIGNS      = 3;
+static const char* CAMPAIGN_NAMES[MAX_CAMPAIGNS] = { "The Realm", "Northern Isles", "Eastern March" };
+
+static const char* getCampaignSavePath(int id){
+    static char buf[32];
+    if(id<0) id=0; if(id>=MAX_CAMPAIGNS) id=MAX_CAMPAIGNS-1;
+    sprintf(buf, "campaign_%d.dat", id);
+    return buf;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 //  SCREEN / GLOBAL CONSTANTS
@@ -465,7 +474,8 @@ static const Color factionColors[FACTION_COUNT]={
 
 struct Province {
     char       name[32];
-    Vector2    center;          // on campaign map (0-1 normalized)
+    Vector2    center;          // on campaign map (pixel position)
+    float      nx, ny;          // normalized position [0-1] for resize
     TerrainType terrain;
     FactionId  owner;
     bool       hasCity;
@@ -555,6 +565,7 @@ struct RecruitEntry {
 //  GLOBAL CAMPAIGN STATE
 // ───────────────────────────────────────────────────────────────────────────
 struct CampaignState {
+    int              campaignId=0;     // which campaign map (0..MAX_CAMPAIGNS-1)
     int              turn=1;
     Resources        res;
     int              playerProvince=0;  // current province of player army
@@ -576,6 +587,10 @@ struct CampaignState {
     int              battlesWon=0;
     int              battlesLost=0;
     int              peakProvinces=0;
+    // Army movement animation (campaign map)
+    int              armyMoveFrom=-1;
+    int              armyMoveTo=-1;
+    float            armyMoveT=0.f;
 };
 
 static CampaignState g_campaign;
@@ -1014,45 +1029,50 @@ static void drawStatBars(float x,float y,float w,float h,const UnitTypeDef& td){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CAMPAIGN MAP GENERATION
+//  CAMPAIGN MAP GENERATION (multiple campaigns)
 // ═══════════════════════════════════════════════════════════════════════════
-static void generateCampaignMap(){
+struct ProvinceTemplate {
+    const char* name; float nx,ny; TerrainType terrain; FactionId owner; bool hasCity;
+    const char* cityName;
+};
+
+static void generateCampaignMap(int campaignId){
     g_campaign.provinces.clear();
+    g_campaign.campaignId = campaignId;
+    int sw = SCREEN_W>0 ? SCREEN_W : 1280;
+    int sh = SCREEN_H>0 ? SCREEN_H : 768;
 
-    // 14 provinces, hand-crafted positions normalized to [0,1]
-    struct ProvinceTemplate {
-        const char* name; float nx,ny; TerrainType terrain; FactionId owner; bool hasCity;
-        const char* cityName;
-    };
-    static const ProvinceTemplate tpls[]={
-        {"Aldenmoor",     0.18f,0.42f, TERRAIN_PLAIN,    FACTION_PLAYER,     true,  "Aldenmoor"},
-        {"Greenvale",     0.30f,0.28f, TERRAIN_FOREST,   FACTION_PLAYER,     true,  "Greenvale"},
-        {"Ironholt",      0.28f,0.62f, TERRAIN_MOUNTAIN, FACTION_NEUTRAL,    true,  "Ironholt"},
-        {"Saltmere",      0.14f,0.72f, TERRAIN_COAST,    FACTION_NEUTRAL,    true,  "Saltmere"},
-        {"Dustfield",     0.42f,0.50f, TERRAIN_PLAIN,    FACTION_NEUTRAL,    false, ""},
-        {"Ashford",       0.52f,0.32f, TERRAIN_FOREST,   FACTION_AGGRESSIVE, true,  "Ashford"},
-        {"Cragspire",     0.60f,0.18f, TERRAIN_MOUNTAIN, FACTION_AGGRESSIVE, true,  "Cragspire"},
-        {"Redmarch",      0.65f,0.48f, TERRAIN_PLAIN,    FACTION_AGGRESSIVE, true,  "Redmarch"},
-        {"Blackfen",      0.50f,0.68f, TERRAIN_FOREST,   FACTION_DEFENSIVE,  true,  "Blackfen"},
-        {"Stonewall",     0.72f,0.65f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE,  true,  "Stonewall"},
-        {"Harborgate",    0.35f,0.85f, TERRAIN_COAST,    FACTION_COMMERCIAL, true,  "Harborgate"},
-        {"Goldenport",    0.55f,0.82f, TERRAIN_COAST,    FACTION_COMMERCIAL, true,  "Goldenport"},
-        {"Thornwood",     0.78f,0.35f, TERRAIN_FOREST,   FACTION_AGGRESSIVE, false, ""},
-        {"Highpass",      0.82f,0.52f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE,  false, ""},
-    };
-    static const int adjData[][2]={
-        {0,1},{0,2},{0,3},{1,4},{1,5},{2,3},{2,4},{2,8},
-        {3,10},{4,5},{4,7},{4,8},{5,6},{5,7},{6,7},{6,12},
-        {7,8},{7,9},{8,10},{8,11},{9,11},{9,13},{10,11},{12,13}
-    };
-
-    int n=14;
-    for(int i=0;i<n;i++){
-        const ProvinceTemplate& tp=tpls[i];
-        Province p{};
-        strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
-        p.center={tp.nx*(float)(SCREEN_W>0?SCREEN_W:1280), tp.ny*(float)(SCREEN_H>0?SCREEN_H:768)};
-        p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
+    if(campaignId==0){
+        // Campaign 0: "The Realm" — original 14 provinces
+        static const ProvinceTemplate tpls[]={
+            {"Aldenmoor",     0.18f,0.42f, TERRAIN_PLAIN,    FACTION_PLAYER,     true,  "Aldenmoor"},
+            {"Greenvale",     0.30f,0.28f, TERRAIN_FOREST,   FACTION_PLAYER,     true,  "Greenvale"},
+            {"Ironholt",      0.28f,0.62f, TERRAIN_MOUNTAIN, FACTION_NEUTRAL,    true,  "Ironholt"},
+            {"Saltmere",      0.14f,0.72f, TERRAIN_COAST,    FACTION_NEUTRAL,    true,  "Saltmere"},
+            {"Dustfield",     0.42f,0.50f, TERRAIN_PLAIN,    FACTION_NEUTRAL,    false, ""},
+            {"Ashford",       0.52f,0.32f, TERRAIN_FOREST,   FACTION_AGGRESSIVE, true,  "Ashford"},
+            {"Cragspire",     0.60f,0.18f, TERRAIN_MOUNTAIN, FACTION_AGGRESSIVE, true,  "Cragspire"},
+            {"Redmarch",      0.65f,0.48f, TERRAIN_PLAIN,    FACTION_AGGRESSIVE, true,  "Redmarch"},
+            {"Blackfen",      0.50f,0.68f, TERRAIN_FOREST,   FACTION_DEFENSIVE,  true,  "Blackfen"},
+            {"Stonewall",     0.72f,0.65f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE,  true,  "Stonewall"},
+            {"Harborgate",    0.35f,0.85f, TERRAIN_COAST,    FACTION_COMMERCIAL, true,  "Harborgate"},
+            {"Goldenport",    0.55f,0.82f, TERRAIN_COAST,    FACTION_COMMERCIAL, true,  "Goldenport"},
+            {"Thornwood",     0.78f,0.35f, TERRAIN_FOREST,   FACTION_AGGRESSIVE, false, ""},
+            {"Highpass",      0.82f,0.52f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE,  false, ""},
+        };
+        static const int adjData[][2]={
+            {0,1},{0,2},{0,3},{1,4},{1,5},{2,3},{2,4},{2,8},
+            {3,10},{4,5},{4,7},{4,8},{5,6},{5,7},{6,7},{6,12},
+            {7,8},{7,9},{8,10},{8,11},{9,11},{9,13},{10,11},{12,13}
+        };
+        int n=14;
+        for(int i=0;i<n;i++){
+            const ProvinceTemplate& tp=tpls[i];
+            Province p{};
+            strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
+            p.nx=tp.nx; p.ny=tp.ny;
+            p.center={tp.nx*(float)sw, tp.ny*(float)sh};
+            p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
         if(tp.hasCity){
             strncpy(p.city.name,tp.cityName,sizeof(p.city.name)-1); p.city.name[sizeof(p.city.name)-1]='\0';
             memset(p.city.built,0,sizeof(p.city.built));
@@ -1086,38 +1106,132 @@ static void generateCampaignMap(){
             p.army.push_back({0,30});
         }
         g_campaign.provinces.push_back(p);
-    }
-    // Add adjacencies
-    for(auto& pr:g_campaign.provinces) pr.adjacent.clear();
-    for(auto& ad:adjData){
-        if(ad[0]<n&&ad[1]<n){
-            g_campaign.provinces[ad[0]].adjacent.push_back(ad[1]);
-            g_campaign.provinces[ad[1]].adjacent.push_back(ad[0]);
+        }
+        for(auto& pr:g_campaign.provinces) pr.adjacent.clear();
+        for(auto& ad:adjData){
+            if(ad[0]<n&&ad[1]<n){
+                g_campaign.provinces[ad[0]].adjacent.push_back(ad[1]);
+                g_campaign.provinces[ad[1]].adjacent.push_back(ad[0]);
+            }
+        }
+    } else if(campaignId==1){
+        // Campaign 1: "Northern Isles" — 10 provinces, island layout
+        static const ProvinceTemplate tpls[]={
+            {"Frostholm",   0.22f,0.35f, TERRAIN_MOUNTAIN, FACTION_PLAYER,   true,  "Frostholm"},
+            {"Icewind",     0.38f,0.22f, TERRAIN_PLAIN,    FACTION_PLAYER,   true,  "Icewind"},
+            {"Northgate",   0.55f,0.28f, TERRAIN_FOREST,   FACTION_NEUTRAL,  true,  "Northgate"},
+            {"Stormhaven",  0.72f,0.40f, TERRAIN_COAST,    FACTION_AGGRESSIVE, true, "Stormhaven"},
+            {"Mistwood",    0.48f,0.55f, TERRAIN_FOREST,   FACTION_NEUTRAL,  false, ""},
+            {"Cinderfell",  0.28f,0.62f, TERRAIN_PLAIN,    FACTION_AGGRESSIVE, true, "Cinderfell"},
+            {"Saltmarsh",   0.15f,0.78f, TERRAIN_COAST,   FACTION_COMMERCIAL, true, "Saltmarsh"},
+            {"Boulder",     0.62f,0.68f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true, "Boulder"},
+            {"Grayvale",    0.80f,0.72f, TERRAIN_FOREST,   FACTION_DEFENSIVE, false, ""},
+            {"Port Snow",   0.42f,0.82f, TERRAIN_COAST,    FACTION_NEUTRAL,  true,  "Port Snow"},
+        };
+        static const int adjData[][2]={
+            {0,1},{0,4},{0,5},{1,2},{1,4},{2,3},{2,4},{2,7},{3,7},{4,5},{4,7},{4,9},{5,6},{5,9},{6,9},{7,8},{8,9}
+        };
+        int n=10;
+        for(int i=0;i<n;i++){
+            const ProvinceTemplate& tp=tpls[i];
+            Province p{};
+            strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
+            p.nx=tp.nx; p.ny=tp.ny;
+            p.center={tp.nx*(float)sw, tp.ny*(float)sh};
+            p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
+            if(tp.hasCity){
+                strncpy(p.city.name,tp.cityName,sizeof(p.city.name)-1); p.city.name[sizeof(p.city.name)-1]='\0';
+                memset(p.city.built,0,sizeof(p.city.built));
+                p.city.constructing=-1; p.city.constructTurns=0; p.city.defBonus=1.0f;
+                if(tp.owner==FACTION_PLAYER){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_AGGRESSIVE||tp.owner==FACTION_DEFENSIVE){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_COMMERCIAL){ p.city.built[BLD_FARM]=true; p.city.built[BLD_MARKET]=true; }
+            }
+            p.army.clear();
+            if(tp.owner==FACTION_AGGRESSIVE){ p.army.push_back({0,40}); p.army.push_back({1,30}); }
+            else if(tp.owner==FACTION_DEFENSIVE){ p.army.push_back({0,50}); p.army.push_back({4,20}); }
+            else if(tp.owner==FACTION_COMMERCIAL){ p.army.push_back({0,30}); }
+            g_campaign.provinces.push_back(p);
+        }
+        for(auto& pr:g_campaign.provinces) pr.adjacent.clear();
+        for(auto& ad:adjData){
+            if(ad[0]<n&&ad[1]<n){
+                g_campaign.provinces[ad[0]].adjacent.push_back(ad[1]);
+                g_campaign.provinces[ad[1]].adjacent.push_back(ad[0]);
+            }
+        }
+    } else if(campaignId==2){
+        // Campaign 2: "Eastern March" — 12 provinces
+        static const ProvinceTemplate tpls[]={
+            {"Riverdale",   0.20f,0.45f, TERRAIN_PLAIN,    FACTION_PLAYER,   true,  "Riverdale"},
+            {"Oakshire",    0.35f,0.32f, TERRAIN_FOREST,  FACTION_PLAYER,   true,  "Oakshire"},
+            {"Eastfort",    0.52f,0.38f, TERRAIN_MOUNTAIN, FACTION_NEUTRAL,  true,  "Eastfort"},
+            {"Seabridge",   0.68f,0.50f, TERRAIN_COAST,   FACTION_AGGRESSIVE, true, "Seabridge"},
+            {"Wheatfield",  0.42f,0.58f, TERRAIN_PLAIN,   FACTION_NEUTRAL,  false, ""},
+            {"Blackwood",   0.58f,0.65f, TERRAIN_FOREST,  FACTION_DEFENSIVE, true, "Blackwood"},
+            {"Cragdale",    0.75f,0.72f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true, "Cragdale"},
+            {"Sandport",    0.28f,0.78f, TERRAIN_COAST,   FACTION_COMMERCIAL, true, "Sandport"},
+            {"Millbrook",   0.12f,0.55f, TERRAIN_PLAIN,   FACTION_NEUTRAL,  true,  "Millbrook"},
+            {"Pinewatch",   0.82f,0.35f, TERRAIN_FOREST,  FACTION_AGGRESSIVE, false, ""},
+            {"Ironford",    0.45f,0.82f, TERRAIN_PLAIN,   FACTION_NEUTRAL,  false, ""},
+            {"Highcliff",   0.65f,0.22f, TERRAIN_MOUNTAIN, FACTION_AGGRESSIVE, true, "Highcliff"},
+        };
+        static const int adjData[][2]={
+            {0,1},{0,4},{0,8},{1,2},{1,4},{2,3},{2,4},{2,9},{2,11},{3,6},{3,9},{4,5},{4,10},{5,6},{5,10},{6,9},{7,8},{7,10},{8,10}
+        };
+        int n=12;
+        for(int i=0;i<n;i++){
+            const ProvinceTemplate& tp=tpls[i];
+            Province p{};
+            strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
+            p.nx=tp.nx; p.ny=tp.ny;
+            p.center={tp.nx*(float)sw, tp.ny*(float)sh};
+            p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
+            if(tp.hasCity){
+                strncpy(p.city.name,tp.cityName,sizeof(p.city.name)-1); p.city.name[sizeof(p.city.name)-1]='\0';
+                memset(p.city.built,0,sizeof(p.city.built));
+                p.city.constructing=-1; p.city.constructTurns=0; p.city.defBonus=1.0f;
+                if(tp.owner==FACTION_PLAYER){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_AGGRESSIVE||tp.owner==FACTION_DEFENSIVE){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_COMMERCIAL){ p.city.built[BLD_FARM]=true; p.city.built[BLD_MARKET]=true; }
+            }
+            p.army.clear();
+            if(tp.owner==FACTION_AGGRESSIVE){ p.army.push_back({0,40}); p.army.push_back({1,30}); }
+            else if(tp.owner==FACTION_DEFENSIVE){ p.army.push_back({0,50}); p.army.push_back({4,20}); }
+            else if(tp.owner==FACTION_COMMERCIAL){ p.army.push_back({0,30}); }
+            g_campaign.provinces.push_back(p);
+        }
+        for(auto& pr:g_campaign.provinces) pr.adjacent.clear();
+        for(auto& ad:adjData){
+            if(ad[0]<n&&ad[1]<n){
+                g_campaign.provinces[ad[0]].adjacent.push_back(ad[1]);
+                g_campaign.provinces[ad[1]].adjacent.push_back(ad[0]);
+            }
         }
     }
-    // Update center coords from actual screen size
 }
 
 static void updateProvinceCenters(){
-    static const float nxs[]={0.18f,0.30f,0.28f,0.14f,0.42f,0.52f,0.60f,0.65f,0.50f,0.72f,0.35f,0.55f,0.78f,0.82f};
-    static const float nys[]={0.42f,0.28f,0.62f,0.72f,0.50f,0.32f,0.18f,0.48f,0.68f,0.65f,0.85f,0.82f,0.35f,0.52f};
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
-        g_campaign.provinces[i].center={nxs[i]*SCREEN_W, nys[i]*SCREEN_H};
+        Province& p=g_campaign.provinces[i];
+        p.center={p.nx*(float)SCREEN_W, p.ny*(float)SCREEN_H};
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  NEW CAMPAIGN INIT
 // ═══════════════════════════════════════════════════════════════════════════
-static void newCampaign(){
+static void newCampaign(int campaignId){
+    if(campaignId<0||campaignId>=MAX_CAMPAIGNS) campaignId=0;
     g_campaign=CampaignState{};
+    g_campaign.campaignId=campaignId;
     g_campaign.res.gold=500.f;
     g_campaign.res.food=200.f;
     g_campaign.res.wood=100.f;
     g_campaign.res.stone=50.f;
     g_campaign.res.iron=50.f;
     g_campaign.playerProvince=0;
-    generateCampaignMap();
+    generateCampaignMap(campaignId);
     updateProvinceCenters();
     // Player starts with 3 spear levy groups
     g_campaign.playerArmy.push_back({0,60});
@@ -2936,24 +3050,60 @@ static GameState updateDrawPreBattle(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: CAMPAIGN MAP
 // ═══════════════════════════════════════════════════════════════════════════
+static const float ARMY_MOVE_DURATION = 0.9f;
+
 static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
-    (void)dt;
     updateProvinceCenters();
-    ClearBackground({10,12,8,255});
-    // Fog / atmosphere rectangles (animated)
-    static float fogX=0;
-    fogX+=10.f*dt;
-    for(int i=0;i<8;i++){
-        float fx=fmodf(fogX+i*200.f,(float)SCREEN_W+400)-200;
-        DrawRectangle((int)fx,0,180,SCREEN_H,{15,20,12,(unsigned char)(8+i*3)});
+
+    // Army movement animation: advance and complete when done
+    bool armyMoving = (g_campaign.armyMoveFrom>=0 && g_campaign.armyMoveTo>=0);
+    if(armyMoving){
+        g_campaign.armyMoveT += dt/ARMY_MOVE_DURATION;
+        if(g_campaign.armyMoveT>=1.f){
+            int to = g_campaign.armyMoveTo;
+            g_campaign.playerProvince = to;
+            g_campaign.armyMoveFrom = -1;
+            g_campaign.armyMoveTo = -1;
+            g_campaign.armyMoveT = 0.f;
+            processTurn();
+            if(!g_campaign.provinces[to].army.empty()){
+                g_preBattle.provinceIdx=to;
+                g_preBattle.isDefense=true;
+                g_preBattle.fogOfWar=false;
+                g_preBattle.estimatedEnemyStrength=0;
+                for(auto [ti,c]:g_campaign.provinces[to].army) g_preBattle.estimatedEnemyStrength+=c;
+                g_preBattle.include.clear();
+                g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
+                for(int j=12;j<(int)g_preBattle.include.size();j++)
+                    g_preBattle.include[j]=false;
+                return STATE_PRE_BATTLE;
+            }
+        }
     }
 
-    // Draw adjacencies
+    // Visual map background: parchment-style gradient + subtle grid
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{45,42,28,255},{28,26,18,255});
+    for(int gx=0;gx<SCREEN_W;gx+=80)
+        DrawLine(gx,0,gx,SCREEN_H,{38,35,25,60});
+    for(int gy=0;gy<SCREEN_H;gy+=80)
+        DrawLine(0,gy,SCREEN_W,gy,{38,35,25,60});
+    static float fogX=0;
+    fogX+=8.f*dt;
+    for(int i=0;i<8;i++){
+        float fx=fmodf(fogX+i*200.f,(float)SCREEN_W+400)-200;
+        DrawRectangle((int)fx,0,140,SCREEN_H,{25,22,15,(unsigned char)(12+i*4)});
+    }
+
+    // Roads (adjacencies) — thicker, earth tone
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
         for(int adj:p.adjacent){
-            if(adj>i)
-                DrawLineEx(p.center,g_campaign.provinces[adj].center,2.f,{40,55,35,100});
+            if(adj>i){
+                Vector2 mid = {(p.center.x+g_campaign.provinces[adj].center.x)*0.5f,
+                              (p.center.y+g_campaign.provinces[adj].center.y)*0.5f};
+                DrawLineEx(p.center,mid,3.5f,{70,55,35,180});
+                DrawLineEx(mid,g_campaign.provinces[adj].center,3.5f,{70,55,35,180});
+            }
         }
     }
 
@@ -2967,30 +3117,43 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         if((int)g_campaign.playerProvince<32) g_campaign.explored[g_campaign.playerProvince]=true;
     }
 
-    // Draw provinces
+    // Terrain fill colors (more visual map)
+    static const Color terrainFill[4]={
+        {140,125,70,220},   // PLAIN — wheat/tan
+        {50,95,45,220},    // FOREST — green
+        {90,75,65,220},    // MOUNTAIN — stone
+        {55,85,110,220}    // COAST — sea blue
+    };
+    static const Color terrainBorder[4]={
+        {180,160,90,255},{70,120,60,255},{110,95,80,255},{70,110,140,255}
+    };
+
+    // Draw provinces (filled by terrain, border by faction when explored)
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
         bool explored=(i<32&&g_campaign.explored[i]);
         Color oc=factionColors[(int)p.owner];
-        // 6.3: Unexplored provinces rendered as dark silhouettes
         if(!explored) oc={40,40,40,255};
-        float rad=30.f;
-        DrawCircleV(p.center,(int)rad,{oc.r,oc.g,oc.b,80});
-        DrawCircleLines((int)p.center.x,(int)p.center.y,(int)rad,oc);
-        // 4.5: Selected province pulse
+        float rad=32.f;
+        Color fill=terrainFill[(int)p.terrain];
+        Color border=terrainBorder[(int)p.terrain];
+        if(!explored){ fill={35,35,35,220}; border={50,50,50,255}; }
+        else { fill.r=(unsigned char)((fill.r+oc.r)/2); fill.g=(unsigned char)((fill.g+oc.g)/2); fill.b=(unsigned char)((fill.b+oc.b)/2); }
+        DrawCircleV(p.center,(int)rad,fill);
+        DrawCircleLines((int)p.center.x,(int)p.center.y,(int)rad,border);
+        DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad-1),oc);
         if(g_selectedProvince==i){
             float pulse=rad+4.f+sinf(g_menuTime*4.f)*4.f;
             DrawCircleLines((int)p.center.x,(int)p.center.y,(int)pulse,C_GOLD);
         }
-        // Terrain indicator
         static const char* terrIcons[4]={"~","T","^","W"};
-        DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{200,200,160,200});
+        DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{240,235,200,230});
         // Name (scale-aware spacing below circle)
         int tw=MeasureText(p.name,11);
         float nameY=p.center.y+rad+uiPx(4.f);
         DrawText(p.name,(int)(p.center.x-tw/2),(int)nameY,11,explored?C_PARCHMENT:Color{100,100,100,255});
-        // Player marker (below name with scaled gap)
-        if(i==g_campaign.playerProvince){
+        // Player marker (below name; hide when army is moving — icon shows position)
+        if(i==g_campaign.playerProvince && !armyMoving){
             DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad+6),C_ALLY);
             float youY=nameY+(float)uiFS(11)+uiPx(4.f);
             DrawText("YOU",(int)(p.center.x-12),(int)youY,11,C_ALLY);
@@ -3003,7 +3166,33 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         } else if(!p.army.empty()&&!explored){
             DrawText("?",(int)(p.center.x-4),(int)(p.center.y-rad-uiPx(16.f)),11,{80,80,80,255});
         }
-        // Hover tooltip (scale-aware line spacing to avoid overlap)
+    }
+
+    // Moving army animation: draw icon between origin and destination
+    if(armyMoving && g_campaign.armyMoveFrom>=0 && g_campaign.armyMoveTo<(int)g_campaign.provinces.size()){
+        Vector2 from = g_campaign.provinces[g_campaign.armyMoveFrom].center;
+        Vector2 to   = g_campaign.provinces[g_campaign.armyMoveTo].center;
+        float t = g_campaign.armyMoveT;
+        float ease = t*t*(3.f-2.f*t); // smooth step
+        Vector2 pos = { from.x+(to.x-from.x)*ease, from.y+(to.y-from.y)*ease };
+        Color armyCol = C_ALLY;
+        DrawCircleV(pos,14,{armyCol.r,armyCol.g,armyCol.b,200});
+        DrawCircleLines((int)pos.x,(int)pos.y,14,armyCol);
+        for(int k=0;k<5;k++){
+            float a=(float)k*0.4f+ g_menuTime*2.f;
+            float rx=pos.x+cosf(a)*8.f, ry=pos.y+sinf(a)*8.f;
+            DrawCircleV({rx,ry},4,{220,220,180,240});
+        }
+    }
+    if(!armyMoving) drawCampaignMovementArrows();
+
+    // Hover tooltip (scale-aware line spacing to avoid overlap)
+    for(int i=0;i<(int)g_campaign.provinces.size();i++){
+        auto& p=g_campaign.provinces[i];
+        float rad=32.f;
+        bool explored=(i<32&&g_campaign.explored[i]);
+        Color oc=factionColors[(int)p.owner];
+        if(!explored) oc={40,40,40,255};
         if(vdist(mouse,p.center)<rad+6){
             // Highlight adjacent
             for(int adj:p.adjacent){
@@ -3015,7 +3204,7 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             // Tooltip — scaled box and line spacing
             float lineH1=(float)uiFS(14)+uiPx(6.f);
             float lineH2=(float)uiFS(12)+uiPx(4.f);
-            float twW=uiPx(220.f), twH=lineH1+lineH2*4.f+uiPx(8.f);
+            float twW=uiPx(240.f), twH=lineH1+lineH2*5.f+uiPx(8.f);
             float tx=mouse.x+10, ty=mouse.y-twH-8;
             if(ty<uiPx(4.f)) ty=mouse.y+rad+uiPx(8.f);
             DrawRectangle((int)(tx-4),(int)(ty-4),(int)(twW+8),(int)(twH+8),{0,0,0,200});
@@ -3025,39 +3214,30 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             DrawText(TextFormat("Owner: %s",factionNames[(int)p.owner]),(int)tx,(int)ty,12,oc); ty+=lineH2;
             if(p.hasCity) DrawText(TextFormat("City: %s",p.city.name),(int)tx,(int)ty,12,C_PARCHMENT); ty+=lineH2;
             int tot=0; for(auto [ti,c]:p.army) tot+=c;
-            if(tot>0) DrawText(TextFormat("Army: ~%d soldiers",tot),(int)tx,(int)ty,12,C_ENEMY_COL);
+            if(tot>0) DrawText(TextFormat("Army: ~%d soldiers",tot),(int)tx,(int)ty,12,C_ENEMY_COL); ty+=lineH2;
+            // Tooltip: warn that moving here advances turn (before the click)
+            bool isAdjHover=false;
+            for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent) if(adj==i) isAdjHover=true;
+            if(isAdjHover&&!armyMoving)
+                DrawText("Click to move here (advances turn)",(int)tx,(int)ty,11,{255,220,100,255});
 
-            // Click to interact
-            if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-                g_selectedProvince=i; // 4.5: track selected province
-                // Check if adjacent to player
+            // Click to interact (ignored while army is moving)
+            if(!armyMoving&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+                g_selectedProvince=i;
                 bool isAdj=false;
                 for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent)
                     if(adj==i) isAdj=true;
                 bool isPlayer=(i==g_campaign.playerProvince);
 
                 if(isPlayer&&p.hasCity){
-                    // View city
                     g_campaign.viewedCity=i;
                     return STATE_CITY_MANAGEMENT;
                 } else if(isAdj){
                     if(p.owner==FACTION_PLAYER){
-                        // Move to this province and process turn (movement costs a turn)
-                        g_campaign.playerProvince=i;
-                        processTurn();
-                        // Check if we triggered a defense battle
-                        if(!g_campaign.provinces[i].army.empty()){
-                            g_preBattle.provinceIdx=i;
-                            g_preBattle.isDefense=true;
-                            g_preBattle.fogOfWar=false;
-                            g_preBattle.estimatedEnemyStrength=0;
-                            for(auto [ti,c]:g_campaign.provinces[i].army) g_preBattle.estimatedEnemyStrength+=c;
-                            g_preBattle.include.clear();
-                            g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
-                            for(int j=12;j<(int)g_preBattle.include.size();j++)
-                                g_preBattle.include[j]=false;
-                            return STATE_PRE_BATTLE;
-                        }
+                        // Start movement animation; turn and battle check happen when animation completes
+                        g_campaign.armyMoveFrom=g_campaign.playerProvince;
+                        g_campaign.armyMoveTo=i;
+                        g_campaign.armyMoveT=0.f;
                     } else {
                         // Initiate battle with enemy province
                         g_preBattle.provinceIdx=i;
@@ -3097,8 +3277,7 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     DrawLine(0,(int)botBarY,SCREEN_W,(int)botBarY,{80,65,30,160});
 
     float btnY=botBarY+(botBarH-uiPx(34.f))*0.5f;
-    if(drawSmBtn({uiPx(10.f),btnY,uiPx(140.f),uiPx(34.f)},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
-        // Process turn (in case player wants to skip without moving)
+    if(!armyMoving&&drawSmBtn({uiPx(10.f),btnY,uiPx(140.f),uiPx(34.f)},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
         processTurn();
         // Check victory/defeat after processing
         int totalProv=(int)g_campaign.provinces.size();
@@ -4236,33 +4415,33 @@ static GameState updateDrawMainMenu(Vector2 mouse){
     DrawLine(SCREEN_W/2-(int)lineW,(int)lineY,SCREEN_W/2+(int)lineW,(int)lineY,{80,65,30,180});
     DrawLine(SCREEN_W/2-(int)uiPx(210.f),(int)(lineY+uiPx(4.f)),SCREEN_W/2+(int)uiPx(210.f),(int)(lineY+uiPx(4.f)),{50,40,20,120});
 
-    // Buttons — start with clear gap below divider, scaled size and spacing
+    // Buttons — campaign selection then continue / quick battle
     float menuTop=lineY+uiPx(28.f);
     float bw=uiPx(350.f), bh=uiPx(50.f);
     float bx=(float)SCREEN_W/2.f-bw/2.f;
     float step=uiPx(60.f);
-    if(drawButton({bx,menuTop,bw,bh},"NEW CAMPAIGN",mouse)) {
-        newCampaign();
-        return STATE_CAMPAIGN_MAP;
-    }
-    if(drawButton({bx,menuTop+step,bw,bh},"CONTINUE",mouse,
+    DrawText("New campaign:",(int)(bx),(int)(menuTop-uiPx(20.f)),14,{120,110,70,255});
+    if(drawButton({bx,menuTop,bw,bh},CAMPAIGN_NAMES[0],mouse)) { newCampaign(0); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step,bw,bh},CAMPAIGN_NAMES[1],mouse)) { newCampaign(1); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step*2.f,bw,bh},CAMPAIGN_NAMES[2],mouse)) { newCampaign(2); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step*3.f,bw,bh},"CONTINUE",mouse,
                   g_hasSave?Color{40,55,40,255}:Color{30,30,30,255},
                   g_hasSave?Color{70,110,60,255}:Color{30,30,30,255})&&g_hasSave){
         if(loadGame()) return STATE_CAMPAIGN_MAP;
     }
-    if(drawButton({bx,menuTop+step*2.f,bw,bh},"QUICK BATTLE",mouse)){
+    if(drawButton({bx,menuTop+step*4.f,bw,bh},"QUICK BATTLE",mouse)){
         g_quickSetup.playerCounts.assign(unitTypeCount(),0);
         g_quickSetup.enemyCounts.assign(unitTypeCount(),0);
         if(unitTypeCount()>0){ g_quickSetup.playerCounts[0]=2; g_quickSetup.enemyCounts[0]=2; }
         return STATE_QUICK_BATTLE_SETUP;
     }
-    if(drawButton({bx,menuTop+step*3.f,bw,bh},"UNIT EDITOR",mouse)){
+    if(drawButton({bx,menuTop+step*5.f,bw,bh},"UNIT EDITOR",mouse)){
         g_editorPreviewDirty=true;
         rebuildEditorPreview();
         return STATE_UNIT_EDITOR;
     }
-    if(drawButton({bx,menuTop+step*4.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
-    if(drawButton({bx,menuTop+step*5.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
+    if(drawButton({bx,menuTop+step*6.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
+    if(drawButton({bx,menuTop+step*7.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
         g_quitRequested=true;
     }
 
@@ -4278,14 +4457,15 @@ static GameState updateDrawMainMenu(Vector2 mouse){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SAVE / LOAD — Campaign persistence in dedicated file
+//  SAVE / LOAD — Campaign persistence per campaign file
 // ═══════════════════════════════════════════════════════════════════════════
-// (CAMPAIGN_SAVE_FILE and SAVE_VERSION defined at top of file)
 
 static void saveGame(){
-    FILE* f=fopen(CAMPAIGN_SAVE_FILE,"wb");
+    const char* path=getCampaignSavePath(g_campaign.campaignId);
+    FILE* f=fopen(path,"wb");
     if(!f) return;
     fwrite(&SAVE_VERSION,sizeof(int),1,f);
+    fwrite(&g_campaign.campaignId,sizeof(int),1,f);
     fwrite(&g_campaign.turn,sizeof(int),1,f);
     fwrite(&g_campaign.res,sizeof(Resources),1,f);
     fwrite(&g_campaign.playerProvince,sizeof(int),1,f);
@@ -4299,6 +4479,8 @@ static void saveGame(){
         fwrite(p.name,1,32,f);
         fwrite(&p.center.x,sizeof(float),1,f);
         fwrite(&p.center.y,sizeof(float),1,f);
+        fwrite(&p.nx,sizeof(float),1,f);
+        fwrite(&p.ny,sizeof(float),1,f);
         int ter=(int)p.terrain; fwrite(&ter,sizeof(int),1,f);
         int own=(int)p.owner;   fwrite(&own,sizeof(int),1,f);
         fwrite(&p.hasCity,sizeof(bool),1,f);
@@ -4340,14 +4522,25 @@ static void saveGame(){
 
     fclose(f);
     g_hasSave=true;
+    // Remember last played campaign for Continue
+    FILE* lf=fopen(CAMPAIGN_LAST_FILE,"wb");
+    if(lf){ fwrite(&g_campaign.campaignId,sizeof(int),1,lf); fclose(lf); }
 }
 
 static bool loadGame(){
-    FILE* f=fopen(CAMPAIGN_SAVE_FILE,"rb");
+    int loadId=0;
+    FILE* lf=fopen(CAMPAIGN_LAST_FILE,"rb");
+    if(lf&&fread(&loadId,sizeof(int),1,lf)==1){ fclose(lf); }
+    else if(lf) fclose(lf);
+    if(loadId<0||loadId>=MAX_CAMPAIGNS) loadId=0;
+
+    const char* path=getCampaignSavePath(loadId);
+    FILE* f=fopen(path,"rb");
     if(!f) return false;
     int ver=0;
     if(fread(&ver,sizeof(int),1,f)!=1||ver!=SAVE_VERSION){ fclose(f); return false; }
 
+    if(fread(&g_campaign.campaignId,sizeof(int),1,f)!=1){ fclose(f); return false; }
     if(fread(&g_campaign.turn,sizeof(int),1,f)!=1){ fclose(f); return false; }
     if(fread(&g_campaign.res,sizeof(Resources),1,f)!=1){ fclose(f); return false; }
     if(fread(&g_campaign.playerProvince,sizeof(int),1,f)!=1){ fclose(f); return false; }
@@ -4364,6 +4557,8 @@ static bool loadGame(){
         if(fread(p.name,1,32,f)!=32){ fclose(f); return false; }
         if(fread(&p.center.x,sizeof(float),1,f)!=1){ fclose(f); return false; }
         if(fread(&p.center.y,sizeof(float),1,f)!=1){ fclose(f); return false; }
+        if(fread(&p.nx,sizeof(float),1,f)!=1){ fclose(f); return false; }
+        if(fread(&p.ny,sizeof(float),1,f)!=1){ fclose(f); return false; }
         int ter=0,own=0;
         if(fread(&ter,sizeof(int),1,f)!=1){ fclose(f); return false; }
         if(fread(&own,sizeof(int),1,f)!=1){ fclose(f); return false; }
@@ -4450,7 +4645,7 @@ static GameState updateDrawVictory(Vector2 mouse){
     DrawText(TextFormat("Peak Provinces Held: %d",g_campaign.peakProvinces),(int)(SCREEN_W/2-200),(int)sy,15,C_GOLD); sy+=40;
 
     if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"NEW CAMPAIGN",mouse,{30,65,30,255},{55,110,50,255})){
-        newCampaign();
+        newCampaign(g_campaign.campaignId);
         return STATE_CAMPAIGN_MAP;
     }
     if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
@@ -4482,7 +4677,7 @@ static GameState updateDrawDefeat(Vector2 mouse){
     DrawText(TextFormat("Peak Provinces Held: %d",g_campaign.peakProvinces),(int)(SCREEN_W/2-200),(int)sy,15,C_SECONDARY); sy+=40;
 
     if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"TRY AGAIN",mouse,{55,20,20,255},{90,35,35,255})){
-        newCampaign();
+        newCampaign(g_campaign.campaignId);
         return STATE_CAMPAIGN_MAP;
     }
     if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
@@ -4510,8 +4705,12 @@ int main(){
     initBuiltinTypes();
     rebuildEditorPreview();
 
-    // Check for campaign save
-    {FILE* tf=fopen(CAMPAIGN_SAVE_FILE,"rb"); if(tf){g_hasSave=true;fclose(tf);}}
+    // Check for any campaign save
+    g_hasSave=false;
+    for(int i=0;i<MAX_CAMPAIGNS;i++){
+        FILE* tf=fopen(getCampaignSavePath(i),"rb");
+        if(tf){ g_hasSave=true; fclose(tf); break; }
+    }
 
     g_state=STATE_MAIN_MENU;
 
@@ -4521,7 +4720,7 @@ int main(){
     if(unitTypeCount()>0){ g_quickSetup.playerCounts[0]=2; g_quickSetup.enemyCounts[0]=2; }
 
     // Pre-battle defaults
-    generateCampaignMap();
+    generateCampaignMap(0);
 
     while(!WindowShouldClose()&&!g_quitRequested){
         // Fullscreen toggle
