@@ -34,6 +34,27 @@ static const int BATTLE_W   = 2560;
 static const int BATTLE_H   = 1536;
 
 // ───────────────────────────────────────────────────────────────────────────
+//  UI SCALE (7.0)
+// ───────────────────────────────────────────────────────────────────────────
+// Rendering scale for UI text and basic measurements. In most states this mirrors
+// g_settings.uiScale; in the settings screen it can be overridden for live preview.
+static float g_uiScaleDraw = 1.f;
+static inline int uiFS(int fs){ return (int)roundf((float)fs*g_uiScaleDraw); }
+static inline float uiPx(float px){ return px*g_uiScaleDraw; }
+
+static inline void DrawTextRaw(const char* text,int x,int y,int fontSize,Color col){ ::DrawText(text,x,y,fontSize,col); }
+static inline int MeasureTextRaw(const char* text,int fontSize){ return ::MeasureText(text,fontSize); }
+static inline void DrawTextUI(const char* text,int x,int y,int fontSize,Color col){
+    DrawTextRaw(text,x,y,uiFS(fontSize),col);
+}
+static inline int MeasureTextUI(const char* text,int fontSize){
+    return MeasureTextRaw(text,uiFS(fontSize));
+}
+
+#define DrawText    DrawTextUI
+#define MeasureText MeasureTextUI
+
+// ───────────────────────────────────────────────────────────────────────────
 //  UTILITY
 // ───────────────────────────────────────────────────────────────────────────
 static inline constexpr unsigned char clampU8(int v){ return (unsigned char)(v<0?0:(v>255?255:v)); }
@@ -93,6 +114,30 @@ enum GameState {
     STATE_DEFEAT,
     STATE_MARKETPLACE      // 6.5: resource trading
 };
+
+// Some screens (unit lists, dense tables) have fixed row heights. To avoid
+// overlapping at very high UI scales, we cap the effective draw-scale per state.
+static inline float effectiveUiScale(GameState st, float requested){
+    float maxS=2.25f;
+    switch(st){
+        // Dense list / table screens
+        case STATE_PRE_BATTLE:
+        case STATE_CITY_MANAGEMENT:
+        case STATE_RECRUITMENT:
+        case STATE_MARKETPLACE:
+        case STATE_UNIT_CODEX:
+            maxS=2.0f; break;
+        // Combat/campaign HUD mixes world + UI; keep it readable but safe
+        case STATE_BATTLE:
+        case STATE_CAMPAIGN_MAP:
+            maxS=2.0f; break;
+        default:
+            maxS=2.25f; break;
+    }
+    if(requested<1.f) requested=1.f;
+    if(requested>maxS) requested=maxS;
+    return requested;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 //  UNIT TYPE DEFINITIONS
@@ -634,6 +679,10 @@ static int g_tradeAmount=10; // amount to buy/sell
 // ───────────────────────────────────────────────────────────────────────────
 static const char* SETTINGS_FILE = "settings.ini";
 struct GameSettings {
+    int   screenW      = 1280;
+    int   screenH      = 720;
+    bool  fullscreen   = false;
+    float uiScale      = 1.f;  // 1.0 = 100%
     float masterVolume = 1.f;
     float musicVolume  = 0.7f;
     int   difficulty   = 1;   // 0=EASY,1=NORMAL,2=HARD
@@ -645,6 +694,10 @@ static GameSettings g_settings;
 static void saveSettings(){
     FILE* f=fopen(SETTINGS_FILE,"w");
     if(!f) return;
+    fprintf(f,"screenW %d\n",g_settings.screenW);
+    fprintf(f,"screenH %d\n",g_settings.screenH);
+    fprintf(f,"fullscreen %d\n",(int)g_settings.fullscreen);
+    fprintf(f,"uiScale %.3f\n",g_settings.uiScale);
     fprintf(f,"masterVolume %.3f\n",g_settings.masterVolume);
     fprintf(f,"musicVolume %.3f\n",g_settings.musicVolume);
     fprintf(f,"difficulty %d\n",g_settings.difficulty);
@@ -657,13 +710,20 @@ static void loadSettings(){
     if(!f) return;
     char key[64];
     while(fscanf(f,"%63s",key)==1){
-        if(strcmp(key,"masterVolume")==0) fscanf(f,"%f",&g_settings.masterVolume);
+        if(strcmp(key,"screenW")==0) fscanf(f,"%d",&g_settings.screenW);
+        else if(strcmp(key,"screenH")==0) fscanf(f,"%d",&g_settings.screenH);
+        else if(strcmp(key,"fullscreen")==0){ int v=0; fscanf(f,"%d",&v); g_settings.fullscreen=(bool)v; }
+        else if(strcmp(key,"uiScale")==0) fscanf(f,"%f",&g_settings.uiScale);
+        else if(strcmp(key,"masterVolume")==0) fscanf(f,"%f",&g_settings.masterVolume);
         else if(strcmp(key,"musicVolume")==0) fscanf(f,"%f",&g_settings.musicVolume);
         else if(strcmp(key,"difficulty")==0) fscanf(f,"%d",&g_settings.difficulty);
         else if(strcmp(key,"showFPS")==0){ int v=0; fscanf(f,"%d",&v); g_settings.showFPS=(bool)v; }
         else if(strcmp(key,"language")==0) fscanf(f,"%d",&g_settings.language);
     }
     fclose(f);
+    // Clamp UI scale to supported range
+    if(g_settings.uiScale<1.f) g_settings.uiScale=1.f;
+    if(g_settings.uiScale>2.25f) g_settings.uiScale=2.25f;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -789,8 +849,14 @@ static bool drawButton(Rectangle r,const char* lbl,Vector2 m,
     bool hv=ptInRect(m,r);
     DrawRectangleRec(r,hv?ch:cn);
     DrawRectangleLinesEx(r,2,hv?C_GOLD:Color{80,110,60,255});
-    int fs=18, tw=MeasureText(lbl,fs);
-    DrawText(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-fs/2),fs,hv?C_PARCHMENT:C_SECONDARY);
+    int fs=18;
+    int sfs=uiFS(fs);
+    int maxH=(int)r.height-6; if(maxH<8) maxH=8;
+    if(sfs>maxH) sfs=maxH;
+    int tw=MeasureTextRaw(lbl,sfs);
+    int maxW=(int)r.width-10; if(maxW<10) maxW=10;
+    while(sfs>8 && tw>maxW){ sfs--; tw=MeasureTextRaw(lbl,sfs); }
+    DrawTextRaw(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-sfs/2),sfs,hv?C_PARCHMENT:C_SECONDARY);
     return hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
 }
 
@@ -799,22 +865,29 @@ static bool drawSmBtn(Rectangle r,const char* lbl,Vector2 m,
     bool hv=ptInRect(m,r);
     DrawRectangleRec(r,hv?ch:cn);
     DrawRectangleLinesEx(r,1,hv?C_GOLD:Color{60,90,50,255});
-    int fs=13, tw=MeasureText(lbl,fs);
-    DrawText(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-fs/2),fs,hv?Color{255,255,255,255}:C_SECONDARY);
+    int fs=13;
+    int sfs=uiFS(fs);
+    int maxH=(int)r.height-6; if(maxH<7) maxH=7;
+    if(sfs>maxH) sfs=maxH;
+    int tw=MeasureTextRaw(lbl,sfs);
+    int maxW=(int)r.width-10; if(maxW<10) maxW=10;
+    while(sfs>7 && tw>maxW){ sfs--; tw=MeasureTextRaw(lbl,sfs); }
+    DrawTextRaw(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-sfs/2),sfs,hv?Color{255,255,255,255}:C_SECONDARY);
     return hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
 }
 
 static int drawIntSlider(Rectangle r,int val,int mn,int mx,
                          const char* label,Vector2 mouse,Color fill={80,160,80,200}){
     if(mx<=mn) return val; // 1.5: guard division by zero
-    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-15),12,C_SECONDARY);
+    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-uiPx(15.f)),12,C_SECONDARY);
     DrawRectangleRec(r,{18,18,18,255});
     DrawRectangleLinesEx(r,1,{55,55,55,255});
     float t=(float)(val-mn)/(float)(mx-mn);
     DrawRectangle((int)r.x,(int)r.y,(int)(t*r.width),(int)r.height,fill);
     float kx=r.x+t*r.width;
-    DrawRectangle((int)(kx-4),(int)(r.y-2),8,(int)(r.height+4),WHITE);
-    DrawText(TextFormat("%d",val),(int)(r.x+r.width+6),(int)(r.y+1),12,WHITE);
+    float kHalf=uiPx(4.f);
+    DrawRectangle((int)(kx-kHalf),(int)(r.y-uiPx(2.f)),(int)(2*kHalf),(int)(r.height+uiPx(4.f)),WHITE);
+    DrawText(TextFormat("%d",val),(int)(r.x+r.width+uiPx(6.f)),(int)(r.y+uiPx(1.f)),12,WHITE);
     if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)&&ptInRect(mouse,r)){
         float nt=(mouse.x-r.x)/r.width;
         nt=fmaxf(0.f,fminf(1.f,nt));
@@ -826,14 +899,15 @@ static int drawIntSlider(Rectangle r,int val,int mn,int mx,
 static float drawFloatSlider(Rectangle r,float val,float mn,float mx,
                               const char* label,const char* fmt,Vector2 mouse,Color fill={80,160,80,200}){
     if(mx<=mn) return val; // 1.5: guard division by zero
-    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-15),12,C_SECONDARY);
+    if(label&&label[0]) DrawText(label,(int)r.x,(int)(r.y-uiPx(15.f)),12,C_SECONDARY);
     DrawRectangleRec(r,{18,18,18,255});
     DrawRectangleLinesEx(r,1,{55,55,55,255});
     float t=(val-mn)/(mx-mn);
     DrawRectangle((int)r.x,(int)r.y,(int)(t*r.width),(int)r.height,fill);
     float kx=r.x+t*r.width;
-    DrawRectangle((int)(kx-4),(int)(r.y-2),8,(int)(r.height+4),WHITE);
-    DrawText(TextFormat(fmt,val),(int)(r.x+r.width+6),(int)(r.y+1),12,WHITE);
+    float kHalf=uiPx(4.f);
+    DrawRectangle((int)(kx-kHalf),(int)(r.y-uiPx(2.f)),(int)(2*kHalf),(int)(r.height+uiPx(4.f)),WHITE);
+    DrawText(TextFormat(fmt,val),(int)(r.x+r.width+uiPx(6.f)),(int)(r.y+uiPx(1.f)),12,WHITE);
     if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)&&ptInRect(mouse,r)){
         float nt=(mouse.x-r.x)/r.width;
         nt=fmaxf(0.f,fminf(1.f,nt));
@@ -866,9 +940,10 @@ static void drawWrappedText(const char* text,int x,int y,int maxWidth,int fontSi
     char word[128]; int wi=0;
     char line[512]; int li=0;
     int curX=0;
+    int lineH=uiFS(fontSize)+(int)roundf(uiPx(2.f));
     auto flushLine=[&](){
         line[li]='\0';
-        if(li>0){DrawText(line,x,y,fontSize,col);y+=fontSize+2;}
+        if(li>0){DrawText(line,x,y,fontSize,col);y+=lineH;}
         li=0; curX=0;
     };
     for(int i=0;;i++){
@@ -2773,7 +2848,7 @@ static GameState updateDrawPreBattle(Vector2 mouse){
         bool chv=ptInRect(mouse,cb);
         DrawRectangleRec(cb,sel?Color{30,80,30,255}:chv?Color{22,48,22,255}:Color{14,28,14,220});
         DrawRectangleLinesEx(cb,1,sel?C_GOLD:Color{60,90,40,255});
-        if(sel) DrawText("✓",(int)(cb.x+5),(int)(cb.y+3),14,C_GOLD);
+        if(sel) DrawText("X",(int)(cb.x+6),(int)(cb.y+3),14,C_GOLD);
         if(chv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
             if(!sel&&deployCount<12) g_preBattle.include[i]=true;
             else if(sel) g_preBattle.include[i]=false;
@@ -2896,23 +2971,25 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         // Terrain indicator
         static const char* terrIcons[4]={"~","T","^","W"};
         DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{200,200,160,200});
-        // Name
+        // Name (scale-aware spacing below circle)
         int tw=MeasureText(p.name,11);
-        DrawText(p.name,(int)(p.center.x-tw/2),(int)(p.center.y+rad+4),11,explored?C_PARCHMENT:Color{100,100,100,255});
-        // Player marker
+        float nameY=p.center.y+rad+uiPx(4.f);
+        DrawText(p.name,(int)(p.center.x-tw/2),(int)nameY,11,explored?C_PARCHMENT:Color{100,100,100,255});
+        // Player marker (below name with scaled gap)
         if(i==g_campaign.playerProvince){
             DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad+6),C_ALLY);
-            DrawText("YOU",(int)(p.center.x-12),(int)(p.center.y+rad+18),11,C_ALLY);
+            float youY=nameY+(float)uiFS(11)+uiPx(4.f);
+            DrawText("YOU",(int)(p.center.x-12),(int)youY,11,C_ALLY);
         }
         // Army indicator — only if explored (6.3)
         if(!p.army.empty()&&explored){
             int total=0; for(auto [ti,c]:p.army) total+=c;
-            DrawText(TextFormat("⚔%d",total),(int)(p.center.x-12),(int)(p.center.y-rad-16),11,
+            DrawText(TextFormat("⚔%d",total),(int)(p.center.x-12),(int)(p.center.y-rad-uiPx(16.f)),11,
                      p.owner==FACTION_PLAYER?C_ALLY:C_ENEMY_COL);
         } else if(!p.army.empty()&&!explored){
-            DrawText("?",(int)(p.center.x-4),(int)(p.center.y-rad-16),11,{80,80,80,255});
+            DrawText("?",(int)(p.center.x-4),(int)(p.center.y-rad-uiPx(16.f)),11,{80,80,80,255});
         }
-        // Hover tooltip
+        // Hover tooltip (scale-aware line spacing to avoid overlap)
         if(vdist(mouse,p.center)<rad+6){
             // Highlight adjacent
             for(int adj:p.adjacent){
@@ -2921,14 +2998,18 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                                 (int)g_campaign.provinces[adj].center.y,
                                 (int)rad+4,{C_GOLD.r,C_GOLD.g,C_GOLD.b,80});
             }
-            // Tooltip
-            float tx=mouse.x+10, ty=mouse.y-40;
-            DrawRectangle((int)tx-4,(int)ty-4,220,90,{0,0,0,200});
-            DrawRectangleLinesEx({tx-4,ty-4,220,90},1,C_GOLD);
-            DrawText(p.name,(int)tx,(int)ty,14,C_GOLD); ty+=18;
-            DrawText(TextFormat("Terrain: %s",terrainNames[(int)p.terrain]),(int)tx,(int)ty,12,C_SECONDARY); ty+=15;
-            DrawText(TextFormat("Owner: %s",factionNames[(int)p.owner]),(int)tx,(int)ty,12,oc); ty+=15;
-            if(p.hasCity) DrawText(TextFormat("City: %s",p.city.name),(int)tx,(int)ty,12,C_PARCHMENT); ty+=15;
+            // Tooltip — scaled box and line spacing
+            float lineH1=(float)uiFS(14)+uiPx(6.f);
+            float lineH2=(float)uiFS(12)+uiPx(4.f);
+            float twW=uiPx(220.f), twH=lineH1+lineH2*4.f+uiPx(8.f);
+            float tx=mouse.x+10, ty=mouse.y-twH-8;
+            if(ty<uiPx(4.f)) ty=mouse.y+rad+uiPx(8.f);
+            DrawRectangle((int)(tx-4),(int)(ty-4),(int)(twW+8),(int)(twH+8),{0,0,0,200});
+            DrawRectangleLinesEx({tx-4,ty-4,twW+8,twH+8},1,C_GOLD);
+            DrawText(p.name,(int)tx,(int)ty,14,C_GOLD); ty+=lineH1;
+            DrawText(TextFormat("Terrain: %s",terrainNames[(int)p.terrain]),(int)tx,(int)ty,12,C_SECONDARY); ty+=lineH2;
+            DrawText(TextFormat("Owner: %s",factionNames[(int)p.owner]),(int)tx,(int)ty,12,oc); ty+=lineH2;
+            if(p.hasCity) DrawText(TextFormat("City: %s",p.city.name),(int)tx,(int)ty,12,C_PARCHMENT); ty+=lineH2;
             int tot=0; for(auto [ti,c]:p.army) tot+=c;
             if(tot>0) DrawText(TextFormat("Army: ~%d soldiers",tot),(int)tx,(int)ty,12,C_ENEMY_COL);
 
@@ -2983,18 +3064,26 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         }
     }
 
-    // Top bar: resources
-    DrawRectangle(0,0,SCREEN_W,36,{0,0,0,210});
-    DrawText(TextFormat("Turn: %d",g_campaign.turn),10,10,14,C_GOLD);
+    // Top bar: resources (scale-aware height and spacing to avoid overlap)
+    float topBarH=uiPx(44.f);
+    float topBarY=(topBarH-(float)uiFS(14))*0.5f;
+    if(topBarY<uiPx(4.f)) topBarY=uiPx(4.f);
+    DrawRectangle(0,0,SCREEN_W,(int)topBarH,{0,0,0,210});
+    DrawText(TextFormat("Turn: %d",g_campaign.turn),(int)uiPx(10.f),(int)topBarY,14,C_GOLD);
     Resources& r=g_campaign.res;
+    int turnW=MeasureText(TextFormat("Turn: %d",g_campaign.turn),14);
+    float resX=uiPx(10.f)+(float)turnW+uiPx(24.f);
     DrawText(TextFormat("Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
-             r.gold,r.food,r.wood,r.stone,r.iron),100,10,13,C_PARCHMENT);
+             r.gold,r.food,r.wood,r.stone,r.iron),(int)resX,(int)topBarY,13,C_PARCHMENT);
 
     // Bottom buttons
-    DrawRectangle(0,SCREEN_H-50,SCREEN_W,50,{0,0,0,210});
-    DrawLine(0,SCREEN_H-50,SCREEN_W,SCREEN_H-50,{80,65,30,160});
+    float botBarH=uiPx(50.f);
+    float botBarY=(float)SCREEN_H-botBarH;
+    DrawRectangle(0,(int)botBarY,SCREEN_W,(int)botBarH,{0,0,0,210});
+    DrawLine(0,(int)botBarY,SCREEN_W,(int)botBarY,{80,65,30,160});
 
-    if(drawSmBtn({10,(float)(SCREEN_H-42),140,34},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
+    float btnY=botBarY+(botBarH-uiPx(34.f))*0.5f;
+    if(drawSmBtn({uiPx(10.f),btnY,uiPx(140.f),uiPx(34.f)},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
         // Process turn (in case player wants to skip without moving)
         processTurn();
         // Check victory/defeat after processing
@@ -3008,13 +3097,17 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             return STATE_DEFEAT;
         }
     }
-    if(drawSmBtn({160,(float)(SCREEN_H-42),120,34},"CODEX",mouse)) return STATE_UNIT_CODEX;
-    if(drawSmBtn({290,(float)(SCREEN_H-42),120,34},"RECRUIT",mouse)){
+    float bw=uiPx(120.f), bw2=uiPx(140.f), bh=uiPx(34.f);
+    float bx=uiPx(10.f)+uiPx(140.f)+uiPx(10.f);
+    if(drawSmBtn({bx,btnY,bw,bh},"CODEX",mouse)) return STATE_UNIT_CODEX;
+    bx+=bw+uiPx(10.f);
+    if(drawSmBtn({bx,btnY,bw,bh},"RECRUIT",mouse)){
         g_campaign.viewedCity=g_campaign.playerProvince;
         return STATE_RECRUITMENT;
     }
-    if(drawSmBtn({420,(float)(SCREEN_H-42),140,34},"MARKETPLACE",mouse)) return STATE_MARKETPLACE;
-    if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-42),120,34},"MENU",mouse,
+    bx+=bw+uiPx(10.f);
+    if(drawSmBtn({bx,btnY,bw2,bh},"MARKETPLACE",mouse)) return STATE_MARKETPLACE;
+    if(drawSmBtn({(float)(SCREEN_W-uiPx(130.f)),btnY,bw,bh},"MENU",mouse,
                   {50,20,20,255},{90,38,38,255})) return STATE_MAIN_MENU;
 
     return STATE_CAMPAIGN_MAP;
@@ -3366,57 +3459,175 @@ static GameState updateDrawUnitCodex(Vector2 mouse,float dt){
 //  STATE: SETTINGS
 // ═══════════════════════════════════════════════════════════════════════════
 static GameState updateDrawSettings(Vector2 mouse){
+    struct ResOpt { int w; int h; const char* label; };
+    static const ResOpt RES_OPTS[] = {
+        // 16:9
+        {1280, 720,  "1280x720 (16:9)"},
+        {1600, 900,  "1600x900 (16:9)"},
+        {1920, 1080, "1920x1080 (16:9)"},
+        {2560, 1440, "2560x1440 (16:9)"},
+        {3840, 2160, "3840x2160 (16:9)"},
+        // 21:9 (ultrawide)
+        {2560, 1080, "2560x1080 (21:9)"},
+        {3440, 1440, "3440x1440 (21:9)"},
+        {3840, 1600, "3840x1600 (21:9)"},
+        {5120, 2160, "5120x2160 (21:9)"},
+    };
+    static const int RES_COUNT = (int)(sizeof(RES_OPTS)/sizeof(RES_OPTS[0]));
+    auto findResIdx = [&](int w,int h)->int{
+        for(int i=0;i<RES_COUNT;i++) if(RES_OPTS[i].w==w && RES_OPTS[i].h==h) return i;
+        return 0;
+    };
+
+    // Local UI copy: only applied when SAVE is pressed
+    static bool s_uiActive=false;
+    static GameSettings s_uiSettings;
+    static int s_resIdx=0;
+    if(!s_uiActive){
+        s_uiSettings = g_settings;
+        s_resIdx = findResIdx(s_uiSettings.screenW, s_uiSettings.screenH);
+        s_uiSettings.screenW = RES_OPTS[s_resIdx].w;
+        s_uiSettings.screenH = RES_OPTS[s_resIdx].h;
+        s_uiActive=true;
+    }
+    // Live-preview UI scale while editing settings
+    g_uiScaleDraw = effectiveUiScale(STATE_SETTINGS, s_uiSettings.uiScale);
+
     ClearBackground(C_BG);
     DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{10,8,6,255},C_BG);
-    int tw2=MeasureText("SETTINGS",32);
-    DrawText("SETTINGS",SCREEN_W/2-tw2/2,30,32,C_GOLD);
-    DrawLine(SCREEN_W/2-200,72,SCREEN_W/2+200,72,C_GOLD);
+    int titleFs=32;
+    float titleY=uiPx(30.f);
+    int tw2=MeasureText("SETTINGS",titleFs);
+    DrawText("SETTINGS",SCREEN_W/2-tw2/2,(int)titleY,titleFs,C_GOLD);
+    float lineY=titleY+(float)uiFS(titleFs)+uiPx(10.f);
+    float lineW=uiPx(200.f);
+    DrawLine(SCREEN_W/2-(int)lineW,(int)lineY,SCREEN_W/2+(int)lineW,(int)lineY,C_GOLD);
 
-    float cx=(float)(SCREEN_W/2-250), cw=500.f, cy=90.f;
+    // Scale-aware layout (so high UI scale doesn't overlap)
+    float cw=fminf(uiPx(500.f),(float)SCREEN_W-uiPx(60.f));
+    if(cw<uiPx(320.f)) cw=uiPx(320.f);
+    float cx=(float)SCREEN_W*0.5f - cw*0.5f;
+    float cy=lineY+uiPx(24.f);
+    float lineGap=uiPx(36.f);
+    float labelGap=uiPx(14.f);
+
+    // Resolution
+    DrawText("Resolution",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    float resH=uiPx(34.f);
+    Rectangle resR={cx,cy,cw,resH};
+    bool resHv=ptInRect(mouse,resR);
+    DrawRectangleRec(resR,resHv?Color{18,28,18,220}:Color{12,18,12,220});
+    DrawRectangleLinesEx(resR,1,Color{60,90,40,255});
+    float arrowW=uiPx(44.f);
+    if(drawSmBtn({cx,cy,arrowW,resH},"<",mouse,{25,35,25,255},{45,65,45,255})){
+        s_resIdx = (s_resIdx-1+RES_COUNT)%RES_COUNT;
+        s_uiSettings.screenW = RES_OPTS[s_resIdx].w;
+        s_uiSettings.screenH = RES_OPTS[s_resIdx].h;
+    }
+    if(drawSmBtn({cx+cw-arrowW,cy,arrowW,resH},">",mouse,{25,35,25,255},{45,65,45,255})){
+        s_resIdx = (s_resIdx+1)%RES_COUNT;
+        s_uiSettings.screenW = RES_OPTS[s_resIdx].w;
+        s_uiSettings.screenH = RES_OPTS[s_resIdx].h;
+    }
+    const char* rl=RES_OPTS[s_resIdx].label;
+    int rtw=MeasureText(rl,14);
+    DrawText(rl,(int)(cx+cw/2-rtw/2),(int)(cy+resH*0.5f-uiPx(7.f)),14,C_PARCHMENT);
+    cy+=uiPx(50.f);
+
+    // Fullscreen checkbox
+    {
+        float cbS=uiPx(20.f);
+        Rectangle fsr={(float)cx,cy,cbS,cbS};
+        bool fshv=ptInRect(mouse,fsr);
+        DrawRectangleRec(fsr,s_uiSettings.fullscreen?Color{40,80,40,255}:fshv?Color{25,45,25,255}:Color{15,25,15,220});
+        DrawRectangleLinesEx(fsr,1,s_uiSettings.fullscreen?C_GOLD:Color{60,90,40,255});
+        if(s_uiSettings.fullscreen) DrawText("X",(int)(cx+uiPx(5.f)),(int)(cy+uiPx(2.f)),14,C_GOLD);
+        DrawText("Fullscreen",(int)(cx+uiPx(28.f)),(int)(cy+uiPx(2.f)),14,C_SECONDARY);
+        if((fshv||ptInRect(mouse,{(float)cx,(float)cy,cw,cbS}))&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
+            s_uiSettings.fullscreen=!s_uiSettings.fullscreen;
+        cy+=lineGap;
+    }
 
     // Master Volume
-    DrawText("Master Volume",(int)cx,(int)(cy-14),12,C_SECONDARY);
-    g_settings.masterVolume=drawFloatSlider({cx,cy,cw,14},g_settings.masterVolume,0.f,1.f,"","%.2f",mouse,{80,160,80,200});
-    cy+=36;
+    DrawText("Master Volume",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    s_uiSettings.masterVolume=drawFloatSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.masterVolume,0.f,1.f,"","%.2f",mouse,{80,160,80,200});
+    cy+=lineGap;
 
     // Music Volume
-    DrawText("Music Volume",(int)cx,(int)(cy-14),12,C_SECONDARY);
-    g_settings.musicVolume=drawFloatSlider({cx,cy,cw,14},g_settings.musicVolume,0.f,1.f,"","%.2f",mouse,{80,120,180,200});
-    cy+=36;
+    DrawText("Music Volume",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    s_uiSettings.musicVolume=drawFloatSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.musicVolume,0.f,1.f,"","%.2f",mouse,{80,120,180,200});
+    cy+=lineGap;
+
+    // UI Scale
+    DrawText("UI Scale",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    float uiPct=s_uiSettings.uiScale*100.f;
+    uiPct=drawFloatSlider({cx,cy,cw,uiPx(14.f)},uiPct,100.f,225.f,"","%.0f%%",mouse,{200,165,80,200});
+    s_uiSettings.uiScale=uiPct/100.f;
+    if(s_uiSettings.uiScale<1.f) s_uiSettings.uiScale=1.f;
+    if(s_uiSettings.uiScale>2.25f) s_uiSettings.uiScale=2.25f;
+    cy+=lineGap;
 
     // Difficulty
-    DrawText("Difficulty:",(int)cx,(int)cy,14,C_SECONDARY); cy+=20;
+    DrawText("Difficulty:",(int)cx,(int)cy,14,C_SECONDARY); cy+=uiPx(20.f);
     static const char* diffNames[]={"EASY","NORMAL","HARD"};
     for(int d=0;d<3;d++){
-        float bx=cx+d*120.f;
-        bool sel=(g_settings.difficulty==d);
+        float bx=cx+d*uiPx(120.f);
+        bool sel=(s_uiSettings.difficulty==d);
         Color bc=sel?Color{40,80,40,255}:Color{20,30,20,255};
         Color bh=sel?Color{60,120,60,255}:Color{35,55,35,255};
-        if(drawSmBtn({bx,cy,110,30},diffNames[d],mouse,bc,bh)) g_settings.difficulty=d;
-        if(sel) DrawRectangleLinesEx({bx,cy,110,30},2,C_GOLD);
+        float bw=uiPx(110.f), bhh=uiPx(30.f);
+        if(drawSmBtn({bx,cy,bw,bhh},diffNames[d],mouse,bc,bh)) s_uiSettings.difficulty=d;
+        if(sel) DrawRectangleLinesEx({bx,cy,bw,bhh},2,C_GOLD);
     }
-    cy+=46;
+    cy+=uiPx(46.f);
 
     // Show FPS checkbox
-    Rectangle cbr={(float)cx,cy,20,20};
+    float cbS=uiPx(20.f);
+    Rectangle cbr={(float)cx,cy,cbS,cbS};
     bool cbhv=ptInRect(mouse,cbr);
-    DrawRectangleRec(cbr,g_settings.showFPS?Color{40,80,40,255}:cbhv?Color{25,45,25,255}:Color{15,25,15,220});
-    DrawRectangleLinesEx(cbr,1,g_settings.showFPS?C_GOLD:Color{60,90,40,255});
-    if(g_settings.showFPS) DrawText("✓",(int)(cx+4),(int)(cy+2),14,C_GOLD);
-    DrawText("Show FPS Counter",(int)(cx+28),(int)(cy+2),14,C_SECONDARY);
-    if(cbhv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_settings.showFPS=!g_settings.showFPS;
-    cy+=36;
+    DrawRectangleRec(cbr,s_uiSettings.showFPS?Color{40,80,40,255}:cbhv?Color{25,45,25,255}:Color{15,25,15,220});
+    DrawRectangleLinesEx(cbr,1,s_uiSettings.showFPS?C_GOLD:Color{60,90,40,255});
+    if(s_uiSettings.showFPS) DrawText("X",(int)(cx+uiPx(5.f)),(int)(cy+uiPx(2.f)),14,C_GOLD);
+    DrawText("Show FPS Counter",(int)(cx+uiPx(28.f)),(int)(cy+uiPx(2.f)),14,C_SECONDARY);
+    if((cbhv||ptInRect(mouse,{(float)cx,(float)cy,cw,cbS}))&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
+        s_uiSettings.showFPS=!s_uiSettings.showFPS;
+    cy+=lineGap;
 
     // F11 hint
     DrawText("F11 / Alt+Enter: Toggle Fullscreen",(int)cx,(int)cy,13,C_PARCHMENT);
-    cy+=28;
+    cy+=uiPx(28.f);
 
     // Save button
-    if(drawButton({(float)(SCREEN_W/2-160),(float)(cy+10),160,44},"SAVE",mouse,{30,60,30,255},{50,100,50,255})){
+    float btnY=cy+uiPx(10.f);
+    float btnW=fminf(uiPx(160.f),(cw-uiPx(12.f))*0.5f);
+    float btnH=uiPx(44.f);
+    float btnGap=uiPx(12.f);
+    float bx1=(float)SCREEN_W*0.5f - (btnW*2.f+btnGap)*0.5f;
+    if(drawButton({bx1,btnY,btnW,btnH},"SAVE",mouse,{30,60,30,255},{50,100,50,255})){
+        // Apply & persist
+        g_settings = s_uiSettings;
         saveSettings();
+
+        // Apply fullscreen + windowed resolution immediately
+        bool isFs=IsWindowFullscreen();
+        if(isFs && !g_settings.fullscreen){
+            ToggleFullscreen();
+            isFs=false;
+        }
+        if(!isFs){
+            SetWindowSize(g_settings.screenW, g_settings.screenH);
+        }
+        if(!isFs && g_settings.fullscreen){
+            ToggleFullscreen();
+        }
+
+        s_uiActive=false;
+        return STATE_MAIN_MENU;
     }
-    if(drawButton({(float)(SCREEN_W/2+8),(float)(cy+10),160,44},"BACK",mouse,{50,25,25,255},{90,40,40,255})){
-        saveSettings();
+    if(drawButton({bx1+btnW+btnGap,btnY,btnW,btnH},"BACK",mouse,{50,25,25,255},{90,40,40,255})){
+        // Discard pending changes
+        s_uiActive=false;
+        g_uiScaleDraw = effectiveUiScale(g_state, g_settings.uiScale);
         return STATE_MAIN_MENU;
     }
     return STATE_SETTINGS;
@@ -3445,76 +3656,89 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
     if(g_editTypeIdx>=unitTypeCount()) g_editTypeIdx=0;
     g_editorPreviewAngle+=40.f*dt;
 
+    // Scale-aware layout (250% and up without overlap)
+    float topBarH=uiPx(54.f);
+    float bottomBarH=uiPx(44.f);
+    float panelY=topBarH+uiPx(6.f);
+    float panelH=(float)SCREEN_H-panelY-bottomBarH-uiPx(6.f);
+    if(panelH<uiPx(100.f)) panelH=uiPx(100.f);
+    float leftW=fminf(uiPx(460.f),(float)(SCREEN_W-20)*0.48f);
+    if(leftW<uiPx(280.f)) leftW=uiPx(280.f);
+    float gap=uiPx(14.f);
+    float rightX=leftW+gap;
+    float rightW=(float)SCREEN_W-rightX-uiPx(8.f);
+    float lx=uiPx(18.f), ly=panelY+uiPx(10.f);
+    float sliderW=leftW-uiPx(80.f);
+    float rowH=uiPx(30.f);
+    float sliderH=uiPx(14.f);
+    float dropH=uiPx(24.f), optH=uiPx(22.f), optGap=uiPx(23.f);
+    float dropW=leftW-uiPx(18.f);
+    float sw=uiPx(12.f);
+
     ClearBackground({8,10,18,255});
     for(int gx=0;gx<SCREEN_W;gx+=40) DrawLine(gx,0,gx,SCREEN_H,{18,20,40,70});
     for(int gy=0;gy<SCREEN_H;gy+=40) DrawLine(0,gy,SCREEN_W,gy,{18,20,40,70});
 
-    DrawRectangle(0,0,SCREEN_W,54,{0,0,0,220});
-    DrawText("UNIT EDITOR — SANDBOX",14,10,24,C_GOLD);
-    DrawText("Modify unit stats (changes persist until restart)",14,38,12,C_SECONDARY);
+    DrawRectangle(0,0,SCREEN_W,(int)topBarH,{0,0,0,220});
+    DrawText("UNIT EDITOR — SANDBOX",(int)uiPx(14.f),(int)uiPx(10.f),24,C_GOLD);
+    DrawText("Modify unit stats (changes persist until restart)",(int)uiPx(14.f),(int)uiPx(38.f),12,C_SECONDARY);
 
-    int panelY=60, panelH=SCREEN_H-panelY-50;
-    int leftW=460, rightX=leftW+14, rightW=SCREEN_W-rightX-8;
-
-    DrawRectangle(8,panelY,leftW,panelH,{10,16,12,210});
-    DrawRectangleLinesEx({8,(float)panelY,(float)leftW,(float)panelH},1,{50,80,50,200});
-    DrawRectangle(rightX,panelY,rightW,panelH,{10,12,28,210});
-    DrawRectangleLinesEx({(float)rightX,(float)panelY,(float)rightW,(float)panelH},1,{50,50,110,200});
-
-    float lx=18, ly=(float)(panelY+10);
-    float sliderW=(float)(leftW-80);
+    DrawRectangle((int)uiPx(8.f),(int)panelY,(int)leftW,(int)panelH,{10,16,12,210});
+    DrawRectangleLinesEx({uiPx(8.f),panelY,leftW,panelH},1,{50,80,50,200});
+    DrawRectangle((int)rightX,(int)panelY,(int)rightW,(int)panelH,{10,12,28,210});
+    DrawRectangleLinesEx({rightX,panelY,rightW,panelH},1,{50,50,110,200});
 
     // Dropdown
-    DrawText("Unit type:",(int)lx,(int)ly,12,C_SECONDARY); ly+=16;
+    DrawText("Unit type:",(int)lx,(int)ly,12,C_SECONDARY); ly+=uiPx(16.f);
     if(unitTypeCount()>0){
         const UnitTypeDef& cur=g_unitTypes[g_editTypeIdx];
-        Rectangle dropBtn={lx,ly,(float)(leftW-18),24};
+        Rectangle dropBtn={lx,ly,dropW,dropH};
         bool dHv=ptInRect(mouse,dropBtn);
         DrawRectangleRec(dropBtn,dHv?Color{28,68,48,255}:Color{16,38,28,255});
         DrawRectangleLinesEx(dropBtn,1,g_editorDropdownOpen?C_GOLD:Color{50,90,60,255});
-        DrawRectangle((int)(lx+4),(int)(ly+4),12,12,{cur.r,cur.g,cur.b,255});
-        DrawText(cur.name,(int)(lx+20),(int)(ly+4),13,WHITE);
+        DrawRectangle((int)(lx+uiPx(4.f)),(int)(ly+uiPx(4.f)),(int)sw,(int)sw,{cur.r,cur.g,cur.b,255});
+        DrawText(cur.name,(int)(lx+uiPx(20.f)),(int)(ly+uiPx(4.f)),13,WHITE);
         if(dHv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) g_editorDropdownOpen=!g_editorDropdownOpen;
         if(g_editorDropdownOpen){
-            float oy=ly+26;
+            float oy=ly+dropH+uiPx(2.f);
             for(int i=0;i<unitTypeCount();i++){
                 const UnitTypeDef& td=g_unitTypes[i];
                 bool sel=(i==g_editTypeIdx);
-                Rectangle opt={lx,oy,(float)(leftW-18),22};
+                Rectangle opt={lx,oy,dropW,optH};
                 bool ohv=ptInRect(mouse,opt);
                 DrawRectangleRec(opt,sel?Color{28,78,40,255}:ohv?Color{20,48,30,255}:Color{12,28,20,240});
                 DrawRectangleLinesEx(opt,1,sel?C_GOLD:Color{40,68,45,255});
-                DrawRectangle((int)(lx+4),(int)(oy+4),12,12,{td.r,td.g,td.b,255});
-                DrawText(td.name,(int)(lx+20),(int)(oy+4),12,sel?C_GOLD:WHITE);
+                DrawRectangle((int)(lx+uiPx(4.f)),(int)(oy+uiPx(4.f)),(int)sw,(int)sw,{td.r,td.g,td.b,255});
+                DrawText(td.name,(int)(lx+uiPx(20.f)),(int)(oy+uiPx(4.f)),12,sel?C_GOLD:WHITE);
                 if(ohv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
                     g_editTypeIdx=i; g_editorDropdownOpen=false; g_editorPreviewDirty=true;
                 }
-                oy+=23;
+                oy+=optGap;
             }
             if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-                float listH=23.f*unitTypeCount();
-                if(!ptInRect(mouse,{lx,ly,(float)(leftW-18),26+listH})) g_editorDropdownOpen=false;
+                float listH=optGap*(float)unitTypeCount();
+                if(!ptInRect(mouse,{lx,ly,dropW,dropH+uiPx(2.f)+listH})) g_editorDropdownOpen=false;
             }
-            ly+=(float)(23*unitTypeCount())+30;
-        } else ly+=30;
+            ly+=dropH+uiPx(2.f)+optGap*(float)unitTypeCount()+uiPx(12.f);
+        } else ly+=uiPx(30.f);
     }
 
     if(g_editTypeIdx<unitTypeCount()){
         UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
         bool changed=false;
 
-        DrawLine((int)lx,(int)ly,(int)(lx+leftW-18),(int)ly,{50,90,50,80}); ly+=8;
+        DrawLine((int)lx,(int)ly,(int)(lx+dropW),(int)ly,{50,90,50,80}); ly+=uiPx(8.f);
 
         auto SI=[&](int& field,int mn,int mx,const char* lbl,Color col){
-            int nv=drawIntSlider({lx,ly,sliderW,14},field,mn,mx,lbl,mouse,col);
-            if(nv!=field){field=nv;changed=true;} ly+=30;
+            int nv=drawIntSlider({lx,ly,sliderW,sliderH},field,mn,mx,lbl,mouse,col);
+            if(nv!=field){field=nv;changed=true;} ly+=rowH;
         };
         auto SF=[&](float& field,float mn,float mx,const char* lbl,const char* fmt,Color col){
-            float nv=drawFloatSlider({lx,ly,sliderW,14},field,mn,mx,lbl,fmt,mouse,col);
-            if(nv!=field){field=nv;changed=true;} ly+=30;
+            float nv=drawFloatSlider({lx,ly,sliderW,sliderH},field,mn,mx,lbl,fmt,mouse,col);
+            if(nv!=field){field=nv;changed=true;} ly+=rowH;
         };
 
-        DrawText("STATS",(int)lx,(int)ly,11,{80,200,80,255}); ly+=14;
+        DrawText("STATS",(int)lx,(int)ly,11,{80,200,80,255}); ly+=uiPx(14.f);
         SI(td.soldierCount,   1,120,"Soldiers",{80,180,80,200});
         SI(td.armor,          0, 40,"Armor",{160,200,220,200});
         SI(td.speed,         30,200,"Speed",{60,180,220,200});
@@ -3528,14 +3752,15 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         SF(td.missileAPDmg,   0.f, 40.f,"Missile AP","%.0f",{160,60,200,200});
         SF(td.missileReload,0.5f,8.f,"Missile Reload","%.1fs",{160,80,180,200});
 
-        DrawLine((int)lx,(int)ly,(int)(lx+leftW-18),(int)ly,{50,90,50,80}); ly+=6;
-        DrawText("COLOR",(int)lx,(int)ly,11,{80,200,80,255}); ly+=14;
-        int nr=drawIntSlider({lx+16,ly,sliderW,12},(int)td.r,0,255,"R",mouse,{220,60,60,200});
-        DrawRectangle((int)lx,(int)ly,12,12,{(unsigned char)nr,0,0,255}); ly+=24;
-        int ng=drawIntSlider({lx+16,ly,sliderW,12},(int)td.g,0,255,"G",mouse,{60,220,60,200});
-        DrawRectangle((int)lx,(int)ly,12,12,{0,(unsigned char)ng,0,255}); ly+=24;
-        int nb=drawIntSlider({lx+16,ly,sliderW,12},(int)td.b,0,255,"B",mouse,{60,60,220,200});
-        DrawRectangle((int)lx,(int)ly,12,12,{0,0,(unsigned char)nb,255}); ly+=26;
+        DrawLine((int)lx,(int)ly,(int)(lx+dropW),(int)ly,{50,90,50,80}); ly+=uiPx(6.f);
+        DrawText("COLOR",(int)lx,(int)ly,11,{80,200,80,255}); ly+=uiPx(14.f);
+        float colorRow=uiPx(24.f);
+        int nr=drawIntSlider({lx+uiPx(16.f),ly,sliderW,uiPx(12.f)},(int)td.r,0,255,"R",mouse,{220,60,60,200});
+        DrawRectangle((int)lx,(int)ly,(int)sw,(int)sw,{(unsigned char)nr,0,0,255}); ly+=colorRow;
+        int ng=drawIntSlider({lx+uiPx(16.f),ly,sliderW,uiPx(12.f)},(int)td.g,0,255,"G",mouse,{60,220,60,200});
+        DrawRectangle((int)lx,(int)ly,(int)sw,(int)sw,{0,(unsigned char)ng,0,255}); ly+=colorRow;
+        int nb=drawIntSlider({lx+uiPx(16.f),ly,sliderW,uiPx(12.f)},(int)td.b,0,255,"B",mouse,{60,60,220,200});
+        DrawRectangle((int)lx,(int)ly,(int)sw,(int)sw,{0,0,(unsigned char)nb,255}); ly+=uiPx(26.f);
         if((unsigned char)nr!=td.r||(unsigned char)ng!=td.g||(unsigned char)nb!=td.b){
             td.r=(unsigned char)nr; td.g=(unsigned char)ng; td.b=(unsigned char)nb; changed=true;
         }
@@ -3544,29 +3769,35 @@ static GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         if(g_editorPreviewDirty){ rebuildEditorPreview(); g_editorPreviewDirty=false; }
 
         // Right panel
-        float rx=(float)rightX, ry=(float)panelY;
-        DrawText(td.name,(int)(rx+10),(int)(ry+10),16,SKYBLUE);
-        DrawLine((int)rx,(int)(ry+32),(int)(rx+rightW),(int)(ry+32),{50,50,110,80});
+        float rx=rightX, ry=panelY;
+        float pad=uiPx(10.f);
+        DrawText(td.name,(int)(rx+pad),(int)(ry+pad),16,SKYBLUE);
+        DrawLine((int)rx,(int)(ry+uiPx(32.f)),(int)(rx+rightW),(int)(ry+uiPx(32.f)),{50,50,110,80});
 
         if(g_editorPrevTex.id>0){
-            Vector2 center={rx+rightW/2, ry+120};
+            Vector2 center={rx+rightW/2.f, ry+uiPx(120.f)};
             drawSoldierSprite(g_editorPrevTex,center,g_editorPreviewAngle,3.f,
                               {td.r,td.g,td.b,255},false);
-            DrawCircleLines((int)center.x,(int)center.y,60,{100,100,200,60});
+            DrawCircleLines((int)center.x,(int)center.y,(int)uiPx(60.f),{100,100,200,60});
         }
 
-        float sy=ry+220;
-        DrawText("DERIVED STATS",(int)(rx+10),(int)sy,12,{100,180,255,255}); sy+=16;
-        DrawText(TextFormat("Total HP: %.0f",(float)td.soldierCount*td.hpPerSoldier),(int)(rx+10),(int)sy,12,{60,220,60,255}); sy+=15;
-        DrawText(TextFormat("Total Melee Dmg: %.0f",td.meleeBaseDmg+td.meleeAPDmg),(int)(rx+10),(int)sy,12,{220,160,40,255}); sy+=15;
-        DrawText(TextFormat("Total Missile Dmg: %.0f",td.missileBaseDmg+td.missileAPDmg),(int)(rx+10),(int)sy,12,{200,100,200,255}); sy+=15;
-        DrawLine((int)rx,(int)sy,(int)(rx+rightW),(int)sy,{50,50,110,80}); sy+=8;
-        DrawText("STAT BARS",(int)(rx+10),(int)sy,12,{100,180,255,200}); sy+=14;
-        drawStatBars(rx+10,sy,rightW-20,(float)(panelY+panelH-sy-8),td);
+        float sy=ry+uiPx(220.f);
+        float lineStep=uiPx(15.f);
+        DrawText("DERIVED STATS",(int)(rx+pad),(int)sy,12,{100,180,255,255}); sy+=uiPx(16.f);
+        DrawText(TextFormat("Total HP: %.0f",(float)td.soldierCount*td.hpPerSoldier),(int)(rx+pad),(int)sy,12,{60,220,60,255}); sy+=lineStep;
+        DrawText(TextFormat("Total Melee Dmg: %.0f",td.meleeBaseDmg+td.meleeAPDmg),(int)(rx+pad),(int)sy,12,{220,160,40,255}); sy+=lineStep;
+        DrawText(TextFormat("Total Missile Dmg: %.0f",td.missileBaseDmg+td.missileAPDmg),(int)(rx+pad),(int)sy,12,{200,100,200,255}); sy+=lineStep;
+        DrawLine((int)rx,(int)sy,(int)(rx+rightW),(int)sy,{50,50,110,80}); sy+=uiPx(8.f);
+        DrawText("STAT BARS",(int)(rx+pad),(int)sy,12,{100,180,255,200}); sy+=uiPx(14.f);
+        float barH=panelY+panelH-sy-uiPx(8.f); if(barH<uiPx(40.f)) barH=uiPx(40.f);
+        drawStatBars(rx+pad,sy,rightW-uiPx(20.f),barH,td);
     }
 
-    DrawRectangle(0,SCREEN_H-44,SCREEN_W,44,{0,0,0,210});
-    if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-38),116,30},"BACK",mouse,
+    float barTop=(float)SCREEN_H-bottomBarH;
+    DrawRectangle(0,(int)barTop,SCREEN_W,(int)bottomBarH,{0,0,0,210});
+    float btnW=uiPx(116.f), btnH=uiPx(30.f);
+    float backY=barTop+(bottomBarH-btnH)*0.5f;
+    if(drawSmBtn({(float)(SCREEN_W-btnW-uiPx(14.f)),backY,btnW,btnH},"BACK",mouse,
                   {50,25,25,255},{80,40,40,255})){
         if(g_editorPrevTex.id>0){UnloadTexture(g_editorPrevTex);g_editorPrevTex={0};}
         return STATE_MAIN_MENU;
@@ -3801,45 +4032,62 @@ static GameState updateDrawMainMenu(Vector2 mouse){
     // Scanlines
     for(int y2=0;y2<SCREEN_H;y2+=3) DrawLine(0,y2,SCREEN_W,y2,{0,0,0,18});
 
-    // Title
+    // Title — scale-aware layout so subtitle and buttons don't overlap at 250%
     const char* title="MEDIEVAL CONQUEST";
     int tsz=58;
     int ttw=MeasureText(title,tsz);
-    DrawText(title,SCREEN_W/2-ttw/2+3,72+3,tsz,{0,60,0,180});
-    DrawText(title,SCREEN_W/2-ttw/2,72,tsz,C_GOLD);
-    const char* sub="Campaign RTS — Forge an Empire";
-    DrawText(sub,SCREEN_W/2-MeasureText(sub,17)/2,142,17,{160,140,80,255});
-    DrawLine(SCREEN_W/2-230,168,SCREEN_W/2+230,168,{80,65,30,180});
-    DrawLine(SCREEN_W/2-210,172,SCREEN_W/2+210,172,{50,40,20,120});
+    float titleY=uiPx(50.f);
+    float titleX=(float)(SCREEN_W/2-ttw/2);
+    DrawText(title,(int)(titleX+3),(int)(titleY+3),tsz,{0,60,0,180});
+    DrawText(title,(int)titleX,(int)titleY,tsz,C_GOLD);
+    // Subtitle well below title (scaled font height + gap)
+    float subY=titleY+(float)uiFS(tsz)+uiPx(20.f);
+    const char* sub="Campaign RTS - Forge an Empire";
+    int subW=MeasureText(sub,17);
+    DrawText(sub,SCREEN_W/2-subW/2,(int)subY,17,{160,140,80,255});
+    float lineY=subY+(float)uiFS(17)+uiPx(14.f);
+    float lineW=uiPx(230.f);
+    DrawLine(SCREEN_W/2-(int)lineW,(int)lineY,SCREEN_W/2+(int)lineW,(int)lineY,{80,65,30,180});
+    DrawLine(SCREEN_W/2-(int)uiPx(210.f),(int)(lineY+uiPx(4.f)),SCREEN_W/2+(int)uiPx(210.f),(int)(lineY+uiPx(4.f)),{50,40,20,120});
 
-    float bx=(float)(SCREEN_W/2-175), bw=350.f, bh=50.f;
-    if(drawButton({bx,190,bw,bh},"NEW CAMPAIGN",mouse)) {
+    // Buttons — start with clear gap below divider, scaled size and spacing
+    float menuTop=lineY+uiPx(28.f);
+    float bw=uiPx(350.f), bh=uiPx(50.f);
+    float bx=(float)SCREEN_W/2.f-bw/2.f;
+    float step=uiPx(60.f);
+    if(drawButton({bx,menuTop,bw,bh},"NEW CAMPAIGN",mouse)) {
         newCampaign();
         return STATE_CAMPAIGN_MAP;
     }
-    if(drawButton({bx,250,bw,bh},"CONTINUE",mouse,
+    if(drawButton({bx,menuTop+step,bw,bh},"CONTINUE",mouse,
                   g_hasSave?Color{40,55,40,255}:Color{30,30,30,255},
                   g_hasSave?Color{70,110,60,255}:Color{30,30,30,255})&&g_hasSave){
         if(loadGame()) return STATE_CAMPAIGN_MAP;
     }
-    if(drawButton({bx,310,bw,bh},"QUICK BATTLE",mouse)){
+    if(drawButton({bx,menuTop+step*2.f,bw,bh},"QUICK BATTLE",mouse)){
         g_quickSetup.playerCounts.assign(unitTypeCount(),0);
         g_quickSetup.enemyCounts.assign(unitTypeCount(),0);
         if(unitTypeCount()>0){ g_quickSetup.playerCounts[0]=2; g_quickSetup.enemyCounts[0]=2; }
         return STATE_QUICK_BATTLE_SETUP;
     }
-    if(drawButton({bx,370,bw,bh},"UNIT EDITOR",mouse)){
+    if(drawButton({bx,menuTop+step*3.f,bw,bh},"UNIT EDITOR",mouse)){
         g_editorPreviewDirty=true;
         rebuildEditorPreview();
         return STATE_UNIT_EDITOR;
     }
-    if(drawButton({bx,430,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
-    if(drawButton({bx,490,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
+    if(drawButton({bx,menuTop+step*4.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
+    if(drawButton({bx,menuTop+step*5.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
         g_quitRequested=true;
     }
 
+    // Bottom hint — keep fully on screen with scaled margin
     const char* hint="LClick/Drag: select  |  RClick: move/attack  |  WASD/Arrows: pan  |  Wheel: zoom  |  F11: fullscreen";
-    DrawText(hint,SCREEN_W/2-MeasureText(hint,10)/2,SCREEN_H-18,10,{60,80,50,255});
+    int hintFs=10;
+    int hintH=uiFS(hintFs);
+    float hintMargin=uiPx(24.f);
+    float hintY=(float)SCREEN_H-hintMargin-(float)hintH;
+    int hintTw=MeasureText(hint,hintFs);
+    DrawText(hint,SCREEN_W/2-hintTw/2,(int)hintY,hintFs,{60,80,50,255});
     return STATE_MAIN_MENU;
 }
 
@@ -4060,12 +4308,17 @@ static GameState updateDrawDefeat(Vector2 mouse){
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 int main(){
+    // Load persistent settings before creating the window (so resolution applies on startup)
+    loadSettings();                  // 3.1: load persistent settings
+    SCREEN_W = g_settings.screenW;
+    SCREEN_H = g_settings.screenH;
+
     InitWindow(SCREEN_W,SCREEN_H,"Medieval Conquest");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
+    if(g_settings.fullscreen && !IsWindowFullscreen()) ToggleFullscreen();
 
     srand((unsigned)time(nullptr)); // 1.2: seed for any remaining rand() calls
-    loadSettings();                  // 3.1: load persistent settings
     g_battleLog.clear();
 
     initBuiltinTypes();
@@ -4091,6 +4344,7 @@ int main(){
 
         SCREEN_W=GetScreenWidth();
         SCREEN_H=GetScreenHeight();
+        g_uiScaleDraw = g_settings.uiScale;
 
         float dt=GetFrameTime();
         if(dt>0.1f) dt=0.1f; // cap delta time
