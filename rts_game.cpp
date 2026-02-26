@@ -533,6 +533,15 @@ struct CampaignState {
 static CampaignState g_campaign;
 
 // ───────────────────────────────────────────────────────────────────────────
+//  CONTROL GROUPS (Ctrl+1..9 / 1..9 recall)
+// ───────────────────────────────────────────────────────────────────────────
+struct ControlGroup {
+    std::vector<int>     unitIndices;  // indices into playerUnits
+    std::vector<Vector2> relOffsets;   // (anchorPos - groupCentroid) at save time
+    bool                 active=false;
+};
+
+// ───────────────────────────────────────────────────────────────────────────
 //  BATTLE STATE (used during STATE_BATTLE)
 // ───────────────────────────────────────────────────────────────────────────
 struct BattleState {
@@ -565,6 +574,9 @@ struct BattleState {
     float     lootGold;
     // Scenario name
     char      scenarioName[64];
+    // Control groups (Ctrl+1..9 / 1..9)
+    ControlGroup controlGroups[9];
+    int          activeControlGroup;  // -1 = none; set when user presses 1-9
 };
 
 static BattleState g_battle;
@@ -1237,6 +1249,7 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
     g_battle.battleProvince=provinceIdx;
     g_battle.isDefense=isDefense;
     g_battle.timeScale=1.f;
+    g_battle.activeControlGroup=-1;
     strncpy(g_battle.scenarioName,scenarioName,sizeof(g_battle.scenarioName)-1); g_battle.scenarioName[sizeof(g_battle.scenarioName)-1]='\0';
 
     // Camera centered on player deployment zone
@@ -1538,7 +1551,7 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
             }
         } 
         else if(hasAttackOrder||(!hasExplicitMoveOrder&&!bu.hasExplicitOrder&&foeUnits.size()>0)){
-            // Auto-advance toward nearest enemy when no explicit orders (v8.2: SPEED OPTIMIZED)
+            // Auto-advance toward nearest enemy when no explicit orders
             // FIX: find nearest enemy group, not always index 0
             int targetIdx=hasAttackOrder?bu.orderAttack:0;
             if(!hasAttackOrder){
@@ -1569,7 +1582,6 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
         // FIX: ALWAYS recalculate slots using desiredAnchor (the intended new position).
         // The old guard (>5 degree facing change) caused slots to go stale during straight-line
         // movement: anchor advanced but soldiers chased old world positions → wrong direction / trembling.
-        // formationSlot is an absolute world position, so it MUST update whenever the anchor moves.
         {
             bu.lastFormationFacing=bu.formationFacing;
             auto slots=calcFormationSlots(desiredAnchor,(int)bu.soldiers.size(),bu.formationFacing);
@@ -1698,13 +1710,10 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 sol.inMelee=true;
                 sol.state=SS_ATTACKING_MELEE;
 
-                // v8.2: Soldiers in melee BREAK FORMATION and fight freely around target
                 // FIX: radius fixed per soldier index (no random per frame), time from GetTime()
-                float orbitRadius=20.f+(float)(si%4)*4.f;  // 20-32px, stable per soldier
-                float orbitSpeed=2.5f;  // radians/second orbital speed
-
-                // FIX: use GetTime() for actual elapsed time, not g_campaign.turn (static int)
-                float timeFactor=(float)GetTime() + (float)si*0.7f;  // unique phase per soldier
+                float orbitRadius=20.f+(float)(si%4)*4.f;
+                float orbitSpeed=2.5f;
+                float timeFactor=(float)GetTime()+(float)si*0.7f;
                 float orbitAngle=timeFactor*orbitSpeed;
                 Vector2 orbitPos={
                     tgt.pos.x + cosf(orbitAngle)*orbitRadius,
@@ -1872,7 +1881,7 @@ static void updateEnemyAI(float dt){
                 bu.orderAttack=-1;
                 bu.hasExplicitOrder=true;
                 bu.orderType=1; // move
-                // FIX: removed bu.anchorPos=bu.orderTarget (was teleporting the unit)
+                // FIX: removed bu.anchorPos=bu.orderTarget (was teleporting)
             } else if(distToTarget>220.f){
                 bu.orderAttack=best_u;
                 bu.orderType=0; // attack
@@ -2081,6 +2090,27 @@ static void drawAllUnits(){
                 DrawText("★",(int)(bu.anchorPos.x-10+v*10),(int)(bu.anchorPos.y-36),12,C_GOLD);
             }
         }
+        // Control group badge: show which group(s) this unit belongs to
+        if(bu.isPlayer){
+            for(int g=0;g<9;g++){
+                const ControlGroup& cg=g_battle.controlGroups[g];
+                if(!cg.active) continue;
+                for(int idx:cg.unitIndices){
+                    if(validIdx(idx,g_battle.playerUnits)&&&g_battle.playerUnits[idx]==&bu){
+                        // Draw group number badge
+                        bool isActive=(g_battle.activeControlGroup==g);
+                        Color bgc=isActive?Color{200,165,80,230}:Color{30,30,30,180};
+                        Color fgc=isActive?Color{20,10,0,255}:Color{180,160,100,255};
+                        int bx=(int)(bu.anchorPos.x+22);
+                        int by=(int)(bu.anchorPos.y-42);
+                        DrawRectangle(bx,by,14,14,bgc);
+                        DrawRectangleLinesEx({(float)bx,(float)by,14,14},1,{150,120,50,200});
+                        DrawText(TextFormat("%d",g+1),bx+4,by+2,10,fgc);
+                        break;
+                    }
+                }
+            }
+        }
         // Morale bar
         float mr=bu.morale/100.f;
         DrawRectangle((int)(bu.anchorPos.x-30),(int)(bu.anchorPos.y-28),60,5,DARKGRAY);
@@ -2098,11 +2128,25 @@ static void drawBattleHUD(Vector2 mouse){
     // Top bar
     DrawRectangle(0,0,SCREEN_W,TOPBAR_H,{0,0,0,220});
     DrawText(g_battle.scenarioName,10,8,14,C_GOLD);
-    DrawText(TextFormat("Turn: %d  |  [SPACE] Speed  |  [ESC] Pause  |  [LClick+Drag] Select  |  [RClick] Give Orders",
+    DrawText(TextFormat("Turn: %d  |  [SPACE] Speed  |  [ESC] Pause  |  [Ctrl+1-9] Save Group  |  [1-9] Select Group",
              g_campaign.turn),
-             SCREEN_W/2-320,8,10,C_SECONDARY);
-    DrawText("Right-click unit/location to command — Left sidebar shows orders",
+             SCREEN_W/2-360,8,10,C_SECONDARY);
+    DrawText("Right-click unit/location to command — Group move preserves formation",
              SCREEN_W/2-280, 20, 9, Color{180, 160, 120, 200});
+    // Draw active control group badges on right of top bar
+    {
+        int bx=SCREEN_W-10;
+        for(int g=8;g>=0;g--){
+            if(!g_battle.controlGroups[g].active) continue;
+            bx-=20;
+            bool isActive=(g_battle.activeControlGroup==g);
+            Color bgc=isActive?Color{200,165,80,255}:Color{50,44,30,200};
+            Color fgc=isActive?Color{10,5,0,255}:Color{180,160,90,255};
+            DrawRectangle(bx,4,18,22,bgc);
+            DrawRectangleLinesEx({(float)bx,4,18,22},1,{120,100,40,200});
+            DrawText(TextFormat("%d",g+1),bx+5,7,12,fgc);
+        }
+    }
 
     // Bottom HUD
     DrawRectangle(0,hudY,SCREEN_W,HUD_H,{8,6,4,240});
@@ -2276,6 +2320,57 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
         return STATE_BATTLE;
     }
 
+    // ── CONTROL GROUPS ────────────────────────────────────────────────────────
+    // Ctrl+1..9  →  save currently selected units as group N (preserves relative positions)
+    // 1..9       →  select group N and mark it as active (move orders will keep formation)
+    {
+        static const int keys[9]={KEY_ONE,KEY_TWO,KEY_THREE,KEY_FOUR,KEY_FIVE,
+                                   KEY_SIX,KEY_SEVEN,KEY_EIGHT,KEY_NINE};
+        bool ctrl=IsKeyDown(KEY_LEFT_CONTROL)||IsKeyDown(KEY_RIGHT_CONTROL);
+        for(int g=0;g<9;g++){
+            if(!IsKeyPressed(keys[g])) continue;
+            if(ctrl){
+                // ── SAVE GROUP ──────────────────────────────────────────────
+                ControlGroup& cg=g_battle.controlGroups[g];
+                cg.unitIndices.clear();
+                cg.relOffsets.clear();
+
+                // Collect selected units and calculate their centroid
+                Vector2 centroid={0,0}; int cnt=0;
+                for(int i=0;i<(int)g_battle.playerUnits.size();i++){
+                    if(!g_battle.playerUnits[i].selected) continue;
+                    int alive=0;
+                    for(auto& s:g_battle.playerUnits[i].soldiers) if(s.alive) alive++;
+                    if(alive==0) continue;
+                    centroid=v2add(centroid,g_battle.playerUnits[i].anchorPos);
+                    cnt++;
+                    cg.unitIndices.push_back(i);
+                }
+                if(cnt>0){
+                    centroid=v2scale(centroid,1.f/(float)cnt);
+                    for(int idx:cg.unitIndices){
+                        cg.relOffsets.push_back(v2sub(g_battle.playerUnits[idx].anchorPos,centroid));
+                    }
+                    cg.active=true;
+                }
+            } else {
+                // ── RECALL GROUP ────────────────────────────────────────────
+                ControlGroup& cg=g_battle.controlGroups[g];
+                if(!cg.active||cg.unitIndices.empty()) continue;
+
+                // Deselect all, then select only this group's surviving units
+                for(auto& bu:g_battle.playerUnits) bu.selected=false;
+                for(int idx:cg.unitIndices){
+                    if(!validIdx(idx,g_battle.playerUnits)) continue;
+                    int alive=0;
+                    for(auto& s:g_battle.playerUnits[idx].soldiers) if(s.alive) alive++;
+                    if(alive>0) g_battle.playerUnits[idx].selected=true;
+                }
+                g_battle.activeControlGroup=g;
+            }
+        }
+    }
+
     if(!g_battle.battleOver){
         // Selection
         bool overHud=(mouse.y>SCREEN_H-HUD_H||mouse.y<TOPBAR_H);
@@ -2287,6 +2382,7 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                 g_battle.selStart=worldMouse;
                 g_battle.dragging=true;
                 for(auto& bu:g_battle.playerUnits) bu.selected=false;
+                g_battle.activeControlGroup=-1; // manual selection breaks group mode
             }
             if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)&&g_battle.dragging){
                 g_battle.selRect.x=fminf(worldMouse.x,g_battle.selStart.x);
@@ -2312,55 +2408,103 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                 g_battle.selRect={};
             }
             if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
-                // Check for enemy target (v7.3: smaller radius to avoid confusion between move/attack)
+                // Check for enemy target
                 int eIdx=-1; float bestD=9999;
                 for(int i=0;i<(int)g_battle.enemyUnits.size();i++){
                     float d=vdist(worldMouse,g_battle.enemyUnits[i].anchorPos);
-                    if(d<bestD&&d<40){bestD=d;eIdx=i;}  // Reduced from 60 to 40 for clearer distinction
+                    if(d<bestD&&d<40){bestD=d;eIdx=i;}
                 }
-                int offX=0;
-                for(auto& bu:g_battle.playerUnits){
-                    if(!bu.selected) continue;
-                    if(eIdx>=0){
-                        // Attack order — target specific enemy unit (v7.3: direct target only)
-                        bu.orderAttack=eIdx;
-                        bu.hasExplicitOrder=true;
-                        bu.orderType=0; // attack
-                        bu.groupState=UGS_ADVANCING;
-                        // Clear movement target
-                        bu.orderTarget=bu.anchorPos;
-                        // Reset soldier targeting to force refresh
-                        for(auto& sol:bu.soldiers){
-                            sol.attackTargetUnit=-1;
-                            sol.attackTargetSoldier=-1;
-                            sol.targetRefreshTimer=0.f;
+
+                // Determine if the selected units are all from the active control group
+                // (so we can preserve their saved relative positions)
+                int acg=g_battle.activeControlGroup;
+                bool useGroupOffsets=false;
+                if(acg>=0&&acg<9&&g_battle.controlGroups[acg].active&&eIdx<0){
+                    // All currently selected units must be in this control group
+                    const ControlGroup& cg=g_battle.controlGroups[acg];
+                    useGroupOffsets=!cg.unitIndices.empty();
+                    for(auto& bu:g_battle.playerUnits){
+                        if(!bu.selected) continue;
+                        bool inGroup=false;
+                        for(int idx:cg.unitIndices){
+                            if(validIdx(idx,g_battle.playerUnits)&&&g_battle.playerUnits[idx]==&bu){
+                                inGroup=true; break;
+                            }
                         }
-                    } else {
-                        // Movement order (v7.3: click on empty space to move)
+                        if(!inGroup){ useGroupOffsets=false; break; }
+                    }
+                }
+
+                if(useGroupOffsets){
+                    // ── CONTROL-GROUP MOVE: preserve saved relative positions ──
+                    const ControlGroup& cg=g_battle.controlGroups[acg];
+                    // The click point is the new centroid of the group
+                    Vector2 newCentroid=worldMouse;
+                    for(int gi=0;gi<(int)cg.unitIndices.size();gi++){
+                        int idx=cg.unitIndices[gi];
+                        if(!validIdx(idx,g_battle.playerUnits)) continue;
+                        BattleUnit& bu=g_battle.playerUnits[idx];
+                        int alive=0; for(auto& s:bu.soldiers) if(s.alive) alive++;
+                        if(alive==0) continue;
+                        Vector2 target=v2add(newCentroid,cg.relOffsets[gi]);
                         bu.orderAttack=-1;
                         bu.hasExplicitOrder=true;
-                        bu.orderType=1; // move
-                        bu.orderTarget={worldMouse.x+(float)offX,worldMouse.y};
+                        bu.orderType=1;
+                        bu.orderTarget=target;
                         bu.groupState=UGS_ADVANCING;
-                        // FIX: update formationFacing immediately so slots recalc points the right way
-                        Vector2 moveDir=vnorm(v2sub(bu.orderTarget,bu.anchorPos));
+                        Vector2 moveDir=vnorm(v2sub(target,bu.anchorPos));
                         bu.formationFacing=dirToAngle(moveDir);
-                        // Recalculate slots now with the new facing and current anchor
-                        {
-                            auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
-                            for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
-                                bu.soldiers[s].formationSlot=slots[s];
-                        }
-                        // Reset soldier targeting — they follow formation, not auto-target during movement
+                        auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
+                        for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
+                            bu.soldiers[s].formationSlot=slots[s];
                         for(auto& sol:bu.soldiers){
                             sol.attackTargetUnit=-1;
                             sol.attackTargetSoldier=-1;
                             sol.targetRefreshTimer=0.f;
                             sol.state=SS_MOVING_TARGET;
                         }
-                        offX=(offX>0)?(-offX):((-offX)+50);
+                    }
+                } else {
+                    // ── NORMAL MOVE / ATTACK ORDER ────────────────────────────
+                    int offX=0;
+                    for(auto& bu:g_battle.playerUnits){
+                        if(!bu.selected) continue;
+                        if(eIdx>=0){
+                            // Attack order
+                            bu.orderAttack=eIdx;
+                            bu.hasExplicitOrder=true;
+                            bu.orderType=0;
+                            bu.groupState=UGS_ADVANCING;
+                            bu.orderTarget=bu.anchorPos;
+                            for(auto& sol:bu.soldiers){
+                                sol.attackTargetUnit=-1;
+                                sol.attackTargetSoldier=-1;
+                                sol.targetRefreshTimer=0.f;
+                            }
+                        } else {
+                            // Movement order
+                            bu.orderAttack=-1;
+                            bu.hasExplicitOrder=true;
+                            bu.orderType=1;
+                            bu.orderTarget={worldMouse.x+(float)offX,worldMouse.y};
+                            bu.groupState=UGS_ADVANCING;
+                            Vector2 moveDir=vnorm(v2sub(bu.orderTarget,bu.anchorPos));
+                            bu.formationFacing=dirToAngle(moveDir);
+                            auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
+                            for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
+                                bu.soldiers[s].formationSlot=slots[s];
+                            for(auto& sol:bu.soldiers){
+                                sol.attackTargetUnit=-1;
+                                sol.attackTargetSoldier=-1;
+                                sol.targetRefreshTimer=0.f;
+                                sol.state=SS_MOVING_TARGET;
+                            }
+                            offX=(offX>0)?(-offX):((-offX)+50);
+                        }
                     }
                 }
+                // Any manual order clears the active control group state (selection changed intent)
+                if(eIdx<0) g_battle.activeControlGroup=-1;
             }
             // 6.6: Shift+RClick to set formation facing angle
             if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)&&IsKeyDown(KEY_LEFT_SHIFT)){
