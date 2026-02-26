@@ -90,7 +90,8 @@ enum GameState {
     STATE_UNIT_EDITOR,    // sandbox only from main menu
     STATE_QUICK_BATTLE_SETUP,
     STATE_VICTORY,
-    STATE_DEFEAT
+    STATE_DEFEAT,
+    STATE_MARKETPLACE      // 6.5: resource trading
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -468,6 +469,9 @@ struct BattleUnit {
     std::vector<Soldier> soldiers;
     int       veterancy;       // 6.2: 0=Recruit,1=Seasoned,2=Veteran,3=Elite
     float     aiReactTimer;    // 3.2: AI recalculates orders every 1.5s
+    int       orderType;       // 6.6: 0=attack,1=move,2=hold,3=flank
+    float     formationFacing; // 6.6: rotation angle for formation
+    float     lastFormationFacing; // v7.2: track last facing to detect changes
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -603,6 +607,15 @@ static GameState g_state = STATE_MAIN_MENU;
 static bool      g_quitRequested = false;
 static bool      g_hasSave = false;
 static float     g_menuTime = 0.f;
+
+// ───────────────────────────────────────────────────────────────────────────
+//  RESOURCE TRADING SYSTEM (6.5)
+// ───────────────────────────────────────────────────────────────────────────
+// Exchange rates: 1 unit of resource = X gold
+static const float TRADE_RATES[5]={1.f, 1.2f, 1.3f, 1.5f, 0.8f}; // gold, food, wood, stone, iron
+enum TradeResource { TRADE_GOLD=0, TRADE_FOOD=1, TRADE_WOOD=2, TRADE_STONE=3, TRADE_IRON=4 };
+static int g_tradeTab=0; // 0-4 for each resource
+static int g_tradeAmount=10; // amount to buy/sell
 
 // ───────────────────────────────────────────────────────────────────────────
 //  SETTINGS (3.1)
@@ -1015,23 +1028,193 @@ static void newCampaign(){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  BATTLE FORMATION HELPERS
+//  TURN PROCESSING (centralized)
+// ═══════════════════════════════════════════════════════════════════════════
+static void processTurn(){
+    Resources& r=g_campaign.res;
+
+    // Advance recruitment queue
+    for(auto& e:g_campaign.recruitQueue){
+        e.turnsLeft--;
+        if(e.turnsLeft<=0){
+            g_campaign.readyUnits.push_back({e.typeIdx,e.typeIdx<(int)g_unitTypes.size()?g_unitTypes[e.typeIdx].soldierCount:40});
+            battleLogAdd(TextFormat("[T%d] %s recruitment complete!", g_campaign.turn, g_unitTypes[e.typeIdx].name));
+        }
+    }
+    // Remove completed recruitment
+    g_campaign.recruitQueue.erase(
+        std::remove_if(g_campaign.recruitQueue.begin(), g_campaign.recruitQueue.end(),
+            [](const RecruitEntry& e){ return e.turnsLeft<=0; }),
+        g_campaign.recruitQueue.end()
+    );
+
+    // Resource generation from ALL player cities
+    for(int pi=0;pi<(int)g_campaign.provinces.size();pi++){
+        Province& prov=g_campaign.provinces[pi];
+        if(prov.owner!=FACTION_PLAYER||!prov.hasCity) continue;
+        City& c=prov.city;
+        for(int b=0;b<BLD_COUNT;b++){
+            if(!c.built[b]) continue;
+            r.gold+=bldGoldYield[b];
+            r.food+=bldFoodYield[b];
+            r.wood+=bldWoodYield[b];
+            r.stone+=bldStoneYield[b];
+            r.iron+=bldIronYield[b];
+        }
+        // Advance construction
+        if(c.constructing>=0){
+            c.constructTurns--;
+            if(c.constructTurns<=0){
+                c.built[c.constructing]=true;
+                battleLogAdd(TextFormat("[T%d] %s: %s completed!", g_campaign.turn, prov.name, bldNames[c.constructing]));
+                c.constructing=-1;
+            }
+        }
+    }
+
+    // Maintenance from all units
+    for(auto [ti,cnt]:g_campaign.readyUnits){
+        if(ti>=unitTypeCount()) continue;
+        const UnitTypeDef& td=g_unitTypes[ti];
+        r.gold-=td.maintGold*(cnt/(float)td.soldierCount);
+        r.food-=td.maintFood*(cnt/(float)td.soldierCount);
+    }
+
+    // Clamp resources (don't go negative)
+    r.gold=std::max(0.f,r.gold);
+    r.food=std::max(0.f,r.food);
+    r.wood=std::max(0.f,r.wood);
+    r.stone=std::max(0.f,r.stone);
+    r.iron=std::max(0.f,r.iron);
+
+    // Enemy AI and actions
+    float aggression=0.05f+0.02f*(float)g_campaign.turn/10.f;
+    aggression=std::min(aggression,0.4f);
+    static const float diffMult[3]={0.7f,1.0f,1.4f};
+    aggression*=diffMult[std::max(0,std::min(2,g_settings.difficulty))];
+
+    // Coalition detection
+    std::vector<int> coalitionAttackers;
+    for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
+        Province& ep2=g_campaign.provinces[pi2];
+        if(ep2.owner==FACTION_NEUTRAL||ep2.owner==FACTION_PLAYER) continue;
+        bool adjPlayer=false;
+        for(int adj2:ep2.adjacent) if(g_campaign.provinces[adj2].owner==FACTION_PLAYER) adjPlayer=true;
+        if(!adjPlayer) continue;
+        for(int adj2:ep2.adjacent){
+            Province& ep3=g_campaign.provinces[adj2];
+            if(ep3.owner!=ep2.owner) continue;
+            bool partnerAdjPlayer=false;
+            for(int adj3:ep3.adjacent) if(g_campaign.provinces[adj3].owner==FACTION_PLAYER) partnerAdjPlayer=true;
+            if(partnerAdjPlayer){
+                coalitionAttackers.push_back(pi2);
+                break;
+            }
+        }
+    }
+
+    for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
+        Province& ep=g_campaign.provinces[pi2];
+        if(ep.owner==FACTION_NEUTRAL||ep.owner==FACTION_PLAYER) continue;
+
+        float roll=frandMT();
+        bool inCoalition=false;
+        for(int ca:coalitionAttackers) if(ca==pi2){inCoalition=true;break;}
+        float attackChance=inCoalition?aggression*2.f:aggression;
+
+        if(roll<attackChance*0.4f){
+            // Attack weak neighbor
+            for(int adj:ep.adjacent){
+                if(g_campaign.provinces[adj].owner==FACTION_PLAYER){
+                    int eStr=0; for(auto [ti,c]:ep.army) eStr+=c;
+                    int pStr=(int)g_campaign.readyUnits.size()*40;
+                    if(eStr>(int)(pStr*1.2f)){
+                        g_preBattle.provinceIdx=adj;
+                        g_preBattle.isDefense=true;
+                        g_preBattle.fogOfWar=false;
+                        g_preBattle.estimatedEnemyStrength=eStr;
+                        g_preBattle.include.clear();
+                        g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
+                        for(int j=12;j<(int)g_preBattle.include.size();j++)
+                            g_preBattle.include[j]=false;
+                        g_campaign.provinces[adj].army=ep.army;
+                        g_campaign.battlesLost=g_campaign.battlesLost;
+                        // Don't return here - we'll handle battle after incrementing turn
+                    }
+                    break;
+                }
+            }
+        } else if(roll<attackChance*0.4f+0.2f){
+            // Reinforcement transfer
+            for(int adj:ep.adjacent){
+                Province& ap=g_campaign.provinces[adj];
+                if(ap.owner!=ep.owner||ap.army.empty()) continue;
+                int apStr=0; for(auto [ti,c]:ap.army) apStr+=c;
+                int epStr=0; for(auto [ti,c]:ep.army) epStr+=c;
+                if(apStr>epStr+20&&!ap.army.empty()){
+                    auto& transferUnit=ap.army.front();
+                    int transferAmt=transferUnit.second/4;
+                    if(transferAmt>0){
+                        bool found=false;
+                        for(auto& eu:ep.army) if(eu.first==transferUnit.first){eu.second+=transferAmt;found=true;break;}
+                        if(!found) ep.army.push_back({transferUnit.first,transferAmt});
+                        transferUnit.second-=transferAmt;
+                        if(transferUnit.second<=0) ap.army.erase(ap.army.begin());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Check victory condition
+    int totalProv=(int)g_campaign.provinces.size();
+    int playerProv=0;
+    for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+    g_campaign.peakProvinces=std::max(g_campaign.peakProvinces,playerProv);
+    if(playerProv>=(int)(totalProv*0.8f)){
+        battleLogAdd("[Campaign] VICTORY! Empire established!");
+    }
+    if(playerProv==0){
+        battleLogAdd("[Campaign] DEFEAT — all provinces lost!");
+    }
+
+    // Finally: Increment turn after all processing
+    g_campaign.turn++;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BATTLE FORMATION HELPERS (v7.0: LINE FORMATION - rectangular 360° rotation)
 // ═══════════════════════════════════════════════════════════════════════════
 static std::vector<Vector2> calcFormationSlots(Vector2 anchor,int count,float facing){
     std::vector<Vector2> slots;
-    int cols=(int)ceilf(sqrtf((float)count));
+
+    // LINE FORMATION: wide rectangular front (width >> depth)
+    // Creates a proper battle line that soldiers will maintain throughout combat
+    int cols=(int)ceilf(sqrtf((float)count*2.0f)); // wider lines (2.0 ratio for wider front)
     int rows=(int)ceilf((float)count/(float)cols);
-    float spacing=22.f;
-    // Facing direction vector
+
+    float spacing=15.f;  // tight spacing for compact line formation
+
+    // Facing direction vector (0° = right, 90° = down, 180° = left, 270° = up)
     float rad=facing*DEG2RAD;
-    Vector2 fwd={cosf(rad),-sinf(rad)};
-    Vector2 right={-fwd.y,fwd.x};
+    Vector2 fwd={cosf(rad),-sinf(rad)};      // forward direction
+    Vector2 right={-fwd.y,fwd.x};             // right direction (perpendicular)
+
+    // Generate slots: soldiers arranged in rows perpendicular to facing direction
+    // This creates a rectangular line formation that rotates properly
     for(int r=0;r<rows;r++){
         for(int c=0;c<cols;c++){
             int idx=r*cols+c;
             if(idx>=count) break;
-            float ox=(c-(cols-1)*0.5f)*spacing;
-            float oy=r*spacing;
+
+            // Offset from anchor:
+            // - lateral (ox): across the front width
+            // - depth (oy): depth into the formation
+            float ox=(c-(cols-1)*0.5f)*spacing;  // lateral spacing across front
+            float oy=r*spacing*0.85f;             // depth spacing (slightly compressed)
+
+            // Calculate slot position: move from anchor along right and forward axes
             Vector2 slot={
                 anchor.x + right.x*ox + fwd.x*oy,
                 anchor.y + right.y*ox + fwd.y*oy
@@ -1101,6 +1284,9 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
         bu.groupState=UGS_IDLE;
         bu.veterancy=0;
         bu.aiReactTimer=0.f;
+        bu.orderType=0; // 6.6: attack order type
+        bu.formationFacing=0.f; // 6.6: facing angle (0 = right)
+        bu.lastFormationFacing=0.f; // v7.2: initialize facing tracker
         int soldierCount=std::min(cnt,(int)td.soldierCount);
         auto slots=calcFormationSlots(bu.anchorPos,soldierCount,0.f);
         for(int s=0;s<soldierCount;s++){
@@ -1136,6 +1322,9 @@ static void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
         bu.groupState=UGS_IDLE;
         bu.veterancy=0;
         bu.aiReactTimer=0.f;
+        bu.orderType=0; // 6.6: attack order type
+        bu.formationFacing=180.f; // 6.6: facing angle (180 = left for enemies)
+        bu.lastFormationFacing=180.f; // v7.2: initialize facing tracker
         int soldierCount=std::min(cnt,(int)td.soldierCount);
         auto slots=calcFormationSlots(bu.anchorPos,soldierCount,180.f);
         for(int s=0;s<soldierCount;s++){
@@ -1177,6 +1366,28 @@ static float calcMissileDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd){
     float armRed=frandMT()*0.5f*(float)defTd.armor+(float)defTd.armor*0.5f;
     armRed=std::min(armRed,(float)defTd.armor);
     return std::max(0.f,attTd.missileBaseDmg*(1.f-armRed/100.f)+attTd.missileAPDmg);
+}
+
+// 6.6: Improved obstacle avoidance with steering behavior
+static Vector2 avoidObstacles(Vector2 pos, Vector2 targetDir, float speed, const std::vector<Rectangle>& obstacles){
+    Vector2 ahead=v2add(pos,v2scale(targetDir,speed*0.5f));
+    Vector2 ahead2=v2add(pos,v2scale(targetDir,speed*0.25f));
+
+    // Check if we're hitting an obstacle
+    Rectangle checkBox={ahead.x-8,ahead.y-8,16,16};
+    Rectangle checkBox2={ahead2.x-8,ahead2.y-8,16,16};
+
+    for(auto& obs:obstacles){
+        if(CheckCollisionRecs(checkBox,obs)||CheckCollisionRecs(checkBox2,obs)){
+            // Try to steer around obstacle
+            Vector2 obsCenter={obs.x+obs.width/2,obs.y+obs.height/2};
+            Vector2 toObs=vnorm(v2sub(obsCenter,pos));
+            Vector2 perp={-toObs.y,toObs.x};
+            // Steer perpendicular to obstacle
+            return vnorm(v2add(targetDir,v2scale(perp,0.7f)));
+        }
+    }
+    return targetDir;
 }
 
 // LOS check for ranged: returns true if line is clear enough to shoot
@@ -1302,10 +1513,90 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
             bu.routeTimer=6.f;
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  MOVEMENT SYSTEM v8.1: ANCHOR FOLLOWS CENTROID (STABLE)
+        // ═══════════════════════════════════════════════════════════════════════════
+
         // Determine group order target (explicit attack or move)
         bool hasAttackOrder=(bu.orderAttack>=0&&bu.orderAttack<(int)foeUnits.size());
+        bool hasExplicitMoveOrder=(bu.hasExplicitOrder&&bu.orderType==1);
 
-        // Recalculate anchor if advancing
+        // Calculate desired movement (toward order target or auto-advance to enemies)
+        Vector2 desiredAnchor=bu.anchorPos;
+
+        if(hasExplicitMoveOrder){
+            Vector2 moveDir=vnorm(v2sub(bu.orderTarget,bu.anchorPos));
+            float distToTarget=vdist(bu.anchorPos,bu.orderTarget);
+
+            if(distToTarget>15.f){
+                desiredAnchor=v2add(bu.anchorPos,v2scale(moveDir,td.speed*dt));
+                bu.formationFacing=dirToAngle(moveDir);
+            } else {
+                // Arrived at target
+                desiredAnchor=bu.orderTarget;
+                bu.hasExplicitOrder=false;
+            }
+        } 
+        else if(hasAttackOrder||(!hasExplicitMoveOrder&&!bu.hasExplicitOrder&&foeUnits.size()>0)){
+            // Auto-advance toward nearest enemy when no explicit orders (v8.2: SPEED OPTIMIZED)
+            // FIX: find nearest enemy group, not always index 0
+            int targetIdx=hasAttackOrder?bu.orderAttack:0;
+            if(!hasAttackOrder){
+                float bestDist=1e9f;
+                for(int ei=0;ei<(int)foeUnits.size();ei++){
+                    int eAlive=0; for(auto& es:foeUnits[ei].soldiers) if(es.alive) eAlive++;
+                    if(eAlive==0) continue;
+                    float d=vdist(bu.anchorPos,foeUnits[ei].anchorPos);
+                    if(d<bestDist){bestDist=d;targetIdx=ei;}
+                }
+            }
+            if(validIdx(targetIdx,foeUnits)){
+                Vector2 toEnemy=vnorm(v2sub(foeUnits[targetIdx].anchorPos,bu.anchorPos));
+                float distToEnemy=vdist(bu.anchorPos,foeUnits[targetIdx].anchorPos);
+
+                // Move toward enemy at full speed until close engagement (v8.2: AGGRESSIVE)
+                // This prevents units from orbiting instead of engaging
+                float engagementDistance=70.f; // Reduced from 100px for faster engagement
+                if(distToEnemy>engagementDistance){
+                    desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*dt));
+                }
+
+                // Rotate formation to face enemy
+                bu.formationFacing=dirToAngle(toEnemy);
+            }
+        }
+
+        // FIX: ALWAYS recalculate slots using desiredAnchor (the intended new position).
+        // The old guard (>5 degree facing change) caused slots to go stale during straight-line
+        // movement: anchor advanced but soldiers chased old world positions → wrong direction / trembling.
+        // formationSlot is an absolute world position, so it MUST update whenever the anchor moves.
+        {
+            bu.lastFormationFacing=bu.formationFacing;
+            auto slots=calcFormationSlots(desiredAnchor,(int)bu.soldiers.size(),bu.formationFacing);
+            for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++){
+                bu.soldiers[s].formationSlot=slots[s];
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  INDIVIDUAL SOLDIER UPDATES (v8.0: SMOOTH GRAVITATIONAL PULL)
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        // Calculate frontline threshold ONCE per unit (optimization + stability)
+        float frontlineDistance=1e9f;
+        for(auto& eneunit:foeUnits){
+            for(auto& esol:eneunit.soldiers){
+                if(!esol.alive) continue;
+                for(auto& sol:bu.soldiers){
+                    if(!sol.alive) continue;
+                    float d=vdist(sol.pos,esol.pos);
+                    frontlineDistance=std::min(frontlineDistance,d);
+                }
+            }
+        }
+        if(frontlineDistance==1e9f) frontlineDistance=200.f;
+        float frontlineThreshold=frontlineDistance+50.f;
+
         // Each soldier updates individually
         for(int si=0;si<(int)bu.soldiers.size();si++){
             Soldier& sol=bu.soldiers[si];
@@ -1315,6 +1606,17 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
             sol.rangeTimer-=dt;
             sol.inMelee=false;
 
+            // Check if this soldier is in front line
+            float distToClosestEnemy=1e9f;
+            for(auto& eneunit:foeUnits){
+                for(auto& esol:eneunit.soldiers){
+                    if(!esol.alive) continue;
+                    float d=vdist(sol.pos,esol.pos);
+                    distToClosestEnemy=std::min(distToClosestEnemy,d);
+                }
+            }
+            bool inFrontLine=(distToClosestEnemy<=frontlineThreshold);
+
             // Resolve attack target
             int targetUnit=sol.attackTargetUnit;
             int targetSol=sol.attackTargetSoldier;
@@ -1323,11 +1625,9 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                               &&foeUnits[targetUnit].soldiers[targetSol].alive);
 
             if(!targetValid){
-                // 2.3: Only re-scan for nearest enemy every 0.3s
                 sol.targetRefreshTimer-=dt;
                 bool needRefresh=(sol.targetRefreshTimer<=0.f);
                 if(!needRefresh&&sol.attackTargetUnit>=0){
-                    // Re-check if cached target is still valid
                     if(validIdx(sol.attackTargetUnit,foeUnits)&&
                        validIdx(sol.attackTargetSoldier,foeUnits[sol.attackTargetUnit].soldiers)&&
                        foeUnits[sol.attackTargetUnit].soldiers[sol.attackTargetSoldier].alive){
@@ -1338,9 +1638,7 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 }
                 if(needRefresh){
                     sol.targetRefreshTimer=0.3f;
-                    // Find new target — prefer group-order target
                     if(hasAttackOrder){
-                        // Nearest soldier in the ordered unit
                         float best=1e9f; int bs=-1;
                         for(int s2=0;s2<(int)foeUnits[bu.orderAttack].soldiers.size();s2++){
                             if(!foeUnits[bu.orderAttack].soldiers[s2].alive) continue;
@@ -1349,8 +1647,7 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                         }
                         if(bs>=0){targetUnit=bu.orderAttack;targetSol=bs;targetValid=true;}
                     }
-                    if(!targetValid){
-                        // Auto-target: nearest enemy
+                    if(!targetValid&&!bu.hasExplicitOrder){
                         auto [nu,ns]=findNearestEnemySoldier(sol.pos,foeUnits);
                         if(nu>=0){targetUnit=nu;targetSol=ns;targetValid=true;}
                     }
@@ -1359,7 +1656,33 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 }
             }
 
-            if(!targetValid){sol.state=SS_IDLE;continue;}
+            // ═══════════════════════════════════════════════════════════════════════════
+            //  SOLDIER MOVEMENT PRIORITY SYSTEM v8.0
+            // ═══════════════════════════════════════════════════════════════════════════
+
+            float slotDist=vdist(sol.pos,sol.formationSlot);
+            const float SLOT_TOLERANCE=8.f; // When soldier is "in slot" (strict precision)
+
+            // If no target, move to formation slot instead of idle
+            if(!targetValid){
+                sol.state=SS_MOVING_SLOT;
+
+                if(slotDist>SLOT_TOLERANCE){
+                    Vector2 toSlot=vnorm(v2sub(sol.formationSlot,sol.pos));
+                    toSlot=avoidObstacles(sol.pos,toSlot,td.speed,g_battle.obstacles);
+                    // v8.2: Fast movement - linear instead of deceleration curve
+                    // Soldiers move at FULL speed toward their slot
+                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*dt));
+                    sol.angleTarget=dirToAngle(toSlot);
+                    sol.chargeMoveTime+=dt;
+                    if(sol.chargeMoveTime>0.8f) sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
+                } else {
+                    sol.state=SS_IDLE;
+                    sol.chargeMoveTime=0.f;
+                }
+                sol.angle=lerpAngle(sol.angle,sol.angleTarget,10.f*dt);
+                continue;  // Skip combat logic if no target
+            }
 
             Soldier& tgt=foeUnits[targetUnit].soldiers[targetSol];
             const UnitTypeDef& fTd=g_unitTypes[foeUnits[targetUnit].typeIdx];
@@ -1370,35 +1693,47 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
             Vector2 dir2=vnorm(v2sub(tgt.pos,sol.pos));
             sol.angleTarget=dirToAngle(dir2);
 
-            if(dist<=meleeD){
-                // Melee
+            // Priority 1: MELEE COMBAT (front line only) - BREAK FORMATION
+            if(inFrontLine&&dist<=meleeD){
                 sol.inMelee=true;
                 sol.state=SS_ATTACKING_MELEE;
+
+                // v8.2: Soldiers in melee BREAK FORMATION and fight freely around target
+                // FIX: radius fixed per soldier index (no random per frame), time from GetTime()
+                float orbitRadius=20.f+(float)(si%4)*4.f;  // 20-32px, stable per soldier
+                float orbitSpeed=2.5f;  // radians/second orbital speed
+
+                // FIX: use GetTime() for actual elapsed time, not g_campaign.turn (static int)
+                float timeFactor=(float)GetTime() + (float)si*0.7f;  // unique phase per soldier
+                float orbitAngle=timeFactor*orbitSpeed;
+                Vector2 orbitPos={
+                    tgt.pos.x + cosf(orbitAngle)*orbitRadius,
+                    tgt.pos.y + sinf(orbitAngle)*orbitRadius
+                };
+
+                // Move toward orbital position (not rigid slot)
+                Vector2 toOrbit=vnorm(v2sub(orbitPos,sol.pos));
+                sol.pos=v2add(sol.pos,v2scale(toOrbit,td.speed*0.4f*dt));  // Slower movement in melee
+
                 if(sol.meleeTimer<=0){
                     bool chargeBonus=sol.chargeReady&&td.spriteBase==SPR_CAVALRY;
                     float dmg=calcMeleeDmg(td,fTd,chargeBonus);
                     if(chargeBonus&&dmg>0){
                         sol.chargeReady=false;
-                        // Knockback
                         tgt.pos=v2add(tgt.pos,v2scale(dir2,12.f));
-                        // Morale hit
                         foeUnits[targetUnit].morale-=10.f;
                     }
                     tgt.hp-=dmg;
                     if(tgt.hp<=0){
                         tgt.alive=false;
-                        sol.kills++;  // 6.2: track kills for veterancy
+                        sol.kills++;
                         g_battle.dead.push_back({tgt.pos,1.f,8.f,fTd.spriteBase==SPR_CAVALRY});
-                        // Battle log
                         if(fTd.soldierCount>0){
                             char logbuf[128];
                             snprintf(logbuf,127,"[T%d] %s soldier slain by %s",
-                                g_campaign.turn,
-                                fTd.name,
-                                td.name);
+                                g_campaign.turn,fTd.name,td.name);
                             battleLogAdd(logbuf);
                         }
-                        // Nearby ally morale drop — use reference safely
                         for(int fui=0;fui<(int)foeUnits.size();fui++){
                             for(auto& fs:foeUnits[fui].soldiers){
                                 if(!fs.alive) continue;
@@ -1406,13 +1741,14 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                             }
                         }
                         sol.attackTargetSoldier=-1; sol.attackTargetUnit=-1;
-                        sol.targetRefreshTimer=0.f; // force retarget next tick
+                        sol.targetRefreshTimer=0.f;
                     }
                     sol.meleeTimer=td.meleeInterval;
                 }
                 sol.chargeMoveTime=0.f;
-            } else if(td.range>0&&dist<=(float)td.range&&!sol.inMelee&&sol.rangeTimer<=0){
-                // Ranged attack
+            }
+            // Priority 2: RANGED COMBAT (back line support, not in melee)
+            else if(td.range>0&&dist<=(float)td.range&&!sol.inMelee&&sol.rangeTimer<=0){
                 if(losClean(sol.pos,tgt.pos,bu.soldiers,si)){
                     sol.state=SS_ATTACKING_RANGED;
                     float dmg=calcMissileDmg(td,fTd);
@@ -1420,23 +1756,20 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     float projSpeed=isCross?380.f:320.f;
                     g_battle.projs.push_back({sol.pos,v2scale(dir2,projSpeed),dmg,true,bu.isPlayer,isCross});
                     sol.rangeTimer=td.missileReload;
+                    sol.chargeMoveTime=0.f;
                 }
-            } else {
-                // Move toward target (or formation slot first)
-                Vector2 dest;
-                if(bu.hasExplicitOrder){
-                    dest=tgt.pos;
-                } else {
-                    // Move to formation slot first, then engage
-                    float slotDist=vdist(sol.pos,sol.formationSlot);
-                    dest=(slotDist>30.f)?sol.formationSlot:tgt.pos;
-                }
-                Vector2 moveDir=vnorm(v2sub(dest,sol.pos));
-                float dd=vdist(sol.pos,dest);
-                if(dd>4.f){
-                    sol.pos=v2add(sol.pos,v2scale(moveDir,td.speed*dt));
-                    sol.angleTarget=dirToAngle(moveDir);
-                    sol.state=SS_MOVING_TARGET;
+            }
+            // Priority 3: MOVE TOWARD SLOT IF ENEMY OUT OF RANGE
+            else {
+                sol.state=SS_MOVING_SLOT;
+                float slotDist=vdist(sol.pos,sol.formationSlot);
+
+                if(slotDist>8.f){
+                    Vector2 toSlot=vnorm(v2sub(sol.formationSlot,sol.pos));
+                    toSlot=avoidObstacles(sol.pos,toSlot,td.speed,g_battle.obstacles);
+                    // v8.2: Fast movement - no deceleration curve
+                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*dt));
+                    sol.angleTarget=dirToAngle(toSlot);
                     sol.chargeMoveTime+=dt;
                     if(sol.chargeMoveTime>0.8f) sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
                 } else {
@@ -1444,24 +1777,51 @@ static void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     sol.chargeMoveTime=0.f;
                 }
             }
+
             sol.angle=lerpAngle(sol.angle,sol.angleTarget,10.f*dt);
         }
 
-        // Update anchor to centroid of alive soldiers
-        Vector2 cent={0,0}; int cnt2=0;
-        for(auto& sol:bu.soldiers) if(sol.alive){cent=v2add(cent,sol.pos);cnt2++;}
-        if(cnt2>0) bu.anchorPos=v2scale(cent,1.f/cnt2);
-
-        // Update group state
+        // Update group state based on soldier activity
         bool anyMelee=false,anyMoving=false;
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
             if(sol.inMelee) anyMelee=true;
-            if(sol.state==SS_MOVING_TARGET||sol.state==SS_MOVING_SLOT) anyMoving=true;
+            if(sol.state==SS_MOVING_SLOT) anyMoving=true;
         }
         if(anyMelee) bu.groupState=UGS_ENGAGED;
         else if(anyMoving) bu.groupState=UGS_ADVANCING;
         else bu.groupState=UGS_IDLE;
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        //  ANCHOR UPDATE v8.1: FOLLOW CENTROID OF SOLDIERS
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Calculate actual centroid of all alive soldiers
+        Vector2 actualCentroid={0,0};
+        int aliveCnt2=0;
+        for(auto& sol:bu.soldiers){
+            if(sol.alive){
+                actualCentroid=v2add(actualCentroid,sol.pos);
+                aliveCnt2++;
+            }
+        }
+        if(aliveCnt2>0) actualCentroid=v2scale(actualCentroid,1.f/(float)aliveCnt2);
+        else actualCentroid=bu.anchorPos; // fallback if all dead
+
+        // Move anchor smoothly toward desired position (toward movement target or auto-advance)
+        // MINIMAL centroid correction - anchor leads, soldiers follow
+        Vector2 targetAnchor=desiredAnchor;
+
+        // v8.3: ULTRA-AGGRESSIVE ADVANCE - almost pure desired movement
+        // Only use 10% centroid correction to prevent oscillation
+        // This allows anchor to lead units toward enemy without drag
+        float centroidWeight=0.1f;  // Minimal correction for all movement types
+        targetAnchor.x=targetAnchor.x*(1.f-centroidWeight)+actualCentroid.x*centroidWeight;
+        targetAnchor.y=targetAnchor.y*(1.f-centroidWeight)+actualCentroid.y*centroidWeight;
+
+        // Snap to target anchor (v8.3: INSTANT RESPONSE)
+        // At 60 FPS: 50.0 * 0.016 = 80% per frame (1-2 frames convergence)
+        bu.anchorPos.x+=(targetAnchor.x-bu.anchorPos.x)*50.f*dt;
+        bu.anchorPos.y+=(targetAnchor.y-bu.anchorPos.y)*50.f*dt;
     }
 }
 
@@ -1511,13 +1871,16 @@ static void updateEnemyAI(float dt){
                 bu.orderTarget=v2add(bu.anchorPos,v2scale(away,200.f));
                 bu.orderAttack=-1;
                 bu.hasExplicitOrder=true;
-                bu.anchorPos=bu.orderTarget;
+                bu.orderType=1; // move
+                // FIX: removed bu.anchorPos=bu.orderTarget (was teleporting the unit)
             } else if(distToTarget>220.f){
                 bu.orderAttack=best_u;
+                bu.orderType=0; // attack
                 bu.hasExplicitOrder=false;
             } else {
                 // Hold — just attack in range
                 bu.orderAttack=best_u;
+                bu.orderType=2; // hold
                 bu.hasExplicitOrder=false;
             }
         } else if(td.spriteBase==SPR_CAVALRY){
@@ -1531,6 +1894,7 @@ static void updateEnemyAI(float dt){
             };
             bu.orderTarget=v2add(targetPos,v2scale(flankDir,80.f));
             bu.orderAttack=best_u;
+            bu.orderType=3; // flank
             bu.hasExplicitOrder=true;
             bu.anchorPos=v2add(bu.anchorPos,v2scale(vnorm(v2sub(bu.orderTarget,bu.anchorPos)),5.f));
         } else {
@@ -1548,12 +1912,13 @@ static void updateEnemyAI(float dt){
                 }
             }
             bu.orderAttack=best_u;
+            bu.orderType=0; // attack
             bu.hasExplicitOrder=false;
         }
 
-        // Update formation slots toward target
+        // Update formation slots toward target (6.6: use proper facing angle)
         if(bu.orderAttack>=0&&validIdx(bu.orderAttack,g_battle.playerUnits)){
-            auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),180.f);
+            auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
             for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
                 bu.soldiers[s].formationSlot=slots[s];
         }
@@ -1634,10 +1999,21 @@ static void drawAllUnits(){
     // Draw order lines for selected player units
     for(auto& bu:g_battle.playerUnits){
         if(!bu.selected) continue;
+        // Show current orders visually
         if(bu.orderAttack>=0&&bu.orderAttack<(int)g_battle.enemyUnits.size()){
-            DrawLineEx(bu.anchorPos,g_battle.enemyUnits[bu.orderAttack].anchorPos,1.5f,{255,100,100,100});
-        } else if(bu.hasExplicitOrder){
-            DrawLineEx(bu.anchorPos,bu.orderTarget,1.5f,{100,180,255,100});
+            // Attack order — red line to target
+            DrawLineEx(bu.anchorPos,g_battle.enemyUnits[bu.orderAttack].anchorPos,2.5f,{255,80,80,160});
+            // Arrow marker on enemy
+            Vector2 dir=vnorm(v2sub(g_battle.enemyUnits[bu.orderAttack].anchorPos,bu.anchorPos));
+            Vector2 markerPos=v2sub(g_battle.enemyUnits[bu.orderAttack].anchorPos,v2scale(dir,30.f));
+            DrawCircleV(markerPos,8,{255,50,50,200});
+            DrawText("⚔",(int)(markerPos.x-8),(int)(markerPos.y-8),16,{255,100,100,255});
+        } else if(bu.hasExplicitOrder&&bu.orderType==1){
+            // Move order — blue line to destination
+            DrawLineEx(bu.anchorPos,bu.orderTarget,2.5f,{100,180,255,160});
+            // Target marker
+            DrawCircleLines((int)bu.orderTarget.x,(int)bu.orderTarget.y,12,{100,180,255,220});
+            DrawText("→",(int)(bu.orderTarget.x-8),(int)(bu.orderTarget.y-6),16,{100,200,255,255});
         }
     }
 
@@ -1722,9 +2098,11 @@ static void drawBattleHUD(Vector2 mouse){
     // Top bar
     DrawRectangle(0,0,SCREEN_W,TOPBAR_H,{0,0,0,220});
     DrawText(g_battle.scenarioName,10,8,14,C_GOLD);
-    DrawText(TextFormat("Turn: %d  |  [SPACE] Speed: %.0fx  |  [ESC] Pause",
-             g_campaign.turn,g_battle.timeScale),
-             SCREEN_W/2-200,8,13,C_SECONDARY);
+    DrawText(TextFormat("Turn: %d  |  [SPACE] Speed  |  [ESC] Pause  |  [LClick+Drag] Select  |  [RClick] Give Orders",
+             g_campaign.turn),
+             SCREEN_W/2-320,8,10,C_SECONDARY);
+    DrawText("Right-click unit/location to command — Left sidebar shows orders",
+             SCREEN_W/2-280, 20, 9, Color{180, 160, 120, 200});
 
     // Bottom HUD
     DrawRectangle(0,hudY,SCREEN_W,HUD_H,{8,6,4,240});
@@ -1760,7 +2138,7 @@ static void drawBattleHUD(Vector2 mouse){
         DrawText("No unit selected",12,hudY+34,14,{70,70,70,255});
     }
 
-    // Center: group state
+    // Center: group state and current orders
     if(sel){
         static const char* gsNames[]={"Idle","Advancing","Engaged","Routing"};
         const char* gsn=gsNames[(int)sel->groupState];
@@ -1768,7 +2146,18 @@ static void drawBattleHUD(Vector2 mouse){
                   sel->groupState==UGS_ROUTING?Color{230,41,55,255}:
                   sel->groupState==UGS_ADVANCING?C_ALLY:C_SECONDARY;
         int tw=MeasureText(gsn,16);
-        DrawText(gsn,SCREEN_W/2-tw/2,hudY+38,16,gsc);
+        DrawText(gsn,SCREEN_W/2-tw/2,hudY+25,16,gsc);
+
+        // Show current orders
+        if(sel->hasExplicitOrder){
+            if(sel->orderAttack>=0&&sel->orderAttack<(int)g_battle.enemyUnits.size()){
+                DrawText("📋 ATTACKING ENEMY UNIT",SCREEN_W/2-115,hudY+48,11,{255,100,100,255});
+            } else if(sel->orderType==1){
+                DrawText("📍 MOVING TO POSITION",SCREEN_W/2-110,hudY+48,11,{100,180,255,255});
+            }
+        } else {
+            DrawText("🎯 IDLE (AUTO)",SCREEN_W/2-60,hudY+48,11,C_SECONDARY);
+        }
     }
 
     // Right: counters + pause button
@@ -1923,31 +2312,66 @@ static GameState updateDrawBattle(Vector2 mouse,float dt){
                 g_battle.selRect={};
             }
             if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
-                // Check for enemy target
+                // Check for enemy target (v7.3: smaller radius to avoid confusion between move/attack)
                 int eIdx=-1; float bestD=9999;
                 for(int i=0;i<(int)g_battle.enemyUnits.size();i++){
                     float d=vdist(worldMouse,g_battle.enemyUnits[i].anchorPos);
-                    if(d<bestD&&d<50){bestD=d;eIdx=i;}
+                    if(d<bestD&&d<40){bestD=d;eIdx=i;}  // Reduced from 60 to 40 for clearer distinction
                 }
                 int offX=0;
                 for(auto& bu:g_battle.playerUnits){
                     if(!bu.selected) continue;
                     if(eIdx>=0){
+                        // Attack order — target specific enemy unit (v7.3: direct target only)
                         bu.orderAttack=eIdx;
                         bu.hasExplicitOrder=true;
+                        bu.orderType=0; // attack
                         bu.groupState=UGS_ADVANCING;
+                        // Clear movement target
+                        bu.orderTarget=bu.anchorPos;
+                        // Reset soldier targeting to force refresh
+                        for(auto& sol:bu.soldiers){
+                            sol.attackTargetUnit=-1;
+                            sol.attackTargetSoldier=-1;
+                            sol.targetRefreshTimer=0.f;
+                        }
                     } else {
+                        // Movement order (v7.3: click on empty space to move)
                         bu.orderAttack=-1;
                         bu.hasExplicitOrder=true;
+                        bu.orderType=1; // move
                         bu.orderTarget={worldMouse.x+(float)offX,worldMouse.y};
                         bu.groupState=UGS_ADVANCING;
-                        // Move formation anchor and recalc slots
-                        bu.anchorPos=bu.orderTarget;
-                        auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),0.f);
-                        for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
-                            bu.soldiers[s].formationSlot=slots[s];
+                        // FIX: update formationFacing immediately so slots recalc points the right way
+                        Vector2 moveDir=vnorm(v2sub(bu.orderTarget,bu.anchorPos));
+                        bu.formationFacing=dirToAngle(moveDir);
+                        // Recalculate slots now with the new facing and current anchor
+                        {
+                            auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
+                            for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
+                                bu.soldiers[s].formationSlot=slots[s];
+                        }
+                        // Reset soldier targeting — they follow formation, not auto-target during movement
+                        for(auto& sol:bu.soldiers){
+                            sol.attackTargetUnit=-1;
+                            sol.attackTargetSoldier=-1;
+                            sol.targetRefreshTimer=0.f;
+                            sol.state=SS_MOVING_TARGET;
+                        }
                         offX=(offX>0)?(-offX):((-offX)+50);
                     }
+                }
+            }
+            // 6.6: Shift+RClick to set formation facing angle
+            if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)&&IsKeyDown(KEY_LEFT_SHIFT)){
+                for(auto& bu:g_battle.playerUnits){
+                    if(!bu.selected) continue;
+                    Vector2 dir=vnorm(v2sub(worldMouse,bu.anchorPos));
+                    bu.formationFacing=dirToAngle(dir);
+                    // Recalc formation slots with new facing
+                    auto slots=calcFormationSlots(bu.anchorPos,(int)bu.soldiers.size(),bu.formationFacing);
+                    for(int s=0;s<(int)bu.soldiers.size()&&s<(int)slots.size();s++)
+                        bu.soldiers[s].formationSlot=slots[s];
                 }
             }
         }
@@ -2379,11 +2803,24 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     return STATE_CITY_MANAGEMENT;
                 } else if(isAdj){
                     if(p.owner==FACTION_PLAYER){
-                        // Move to this province
+                        // Move to this province and process turn (movement costs a turn)
                         g_campaign.playerProvince=i;
-                        g_campaign.turn++;
+                        processTurn();
+                        // Check if we triggered a defense battle
+                        if(!g_campaign.provinces[i].army.empty()){
+                            g_preBattle.provinceIdx=i;
+                            g_preBattle.isDefense=true;
+                            g_preBattle.fogOfWar=false;
+                            g_preBattle.estimatedEnemyStrength=0;
+                            for(auto [ti,c]:g_campaign.provinces[i].army) g_preBattle.estimatedEnemyStrength+=c;
+                            g_preBattle.include.clear();
+                            g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
+                            for(int j=12;j<(int)g_preBattle.include.size();j++)
+                                g_preBattle.include[j]=false;
+                            return STATE_PRE_BATTLE;
+                        }
                     } else {
-                        // Initiate battle
+                        // Initiate battle with enemy province
                         g_preBattle.provinceIdx=i;
                         g_preBattle.isDefense=false;
                         g_preBattle.fogOfWar=(p.owner!=FACTION_NEUTRAL);
@@ -2414,140 +2851,17 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     DrawLine(0,SCREEN_H-50,SCREEN_W,SCREEN_H-50,{80,65,30,160});
 
     if(drawSmBtn({10,(float)(SCREEN_H-42),140,34},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
-        // Process turn
-        g_campaign.turn++;
-        // Resource generation
-        Province& pp=g_campaign.provinces[g_campaign.playerProvince];
-        if(pp.hasCity){
-            City& c=pp.city;
-            for(int b=0;b<BLD_COUNT;b++){
-                if(!c.built[b]) continue;
-                r.gold+=bldGoldYield[b];
-                r.food+=bldFoodYield[b];
-                r.wood+=bldWoodYield[b];
-                r.stone+=bldStoneYield[b];
-                r.iron+=bldIronYield[b];
-            }
-            // Advance construction
-            if(c.constructing>=0){
-                c.constructTurns--;
-                if(c.constructTurns<=0){
-                    c.built[c.constructing]=true;
-                    c.constructing=-1;
-                }
-            }
+        // Process turn (in case player wants to skip without moving)
+        processTurn();
+        // Check victory/defeat after processing
+        int totalProv=(int)g_campaign.provinces.size();
+        int playerProv=0;
+        for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+        if(playerProv>=(int)(totalProv*0.8f)){
+            return STATE_VICTORY;
         }
-        // Maintenance
-        for(auto [ti,cnt]:g_campaign.readyUnits){
-            if(ti>=unitTypeCount()) continue;
-            const UnitTypeDef& td=g_unitTypes[ti];
-            r.gold-=td.maintGold*(cnt/(float)td.soldierCount);
-            r.food-=td.maintFood*(cnt/(float)td.soldierCount);
-            if(r.gold<0){
-                // Morale penalty — just apply to global resources
-                r.gold=0;
-            }
-            if(r.food<0) r.food=0;
-        }
-        // 3.3: Improved enemy AI — weighted decisions, escalating aggression
-        float aggression=0.05f+0.02f*(float)g_campaign.turn/10.f;
-        aggression=std::min(aggression,0.4f);
-        // Apply difficulty multiplier
-        static const float diffMult[3]={0.7f,1.0f,1.4f};
-        aggression*=diffMult[std::max(0,std::min(2,g_settings.difficulty))];
-
-        // Coalition detection: pairs of enemies both adjacent to player attack same turn
-        std::vector<int> coalitionAttackers;
-        for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
-            Province& ep2=g_campaign.provinces[pi2];
-            if(ep2.owner==FACTION_NEUTRAL||ep2.owner==FACTION_PLAYER) continue;
-            bool adjPlayer=false;
-            for(int adj2:ep2.adjacent) if(g_campaign.provinces[adj2].owner==FACTION_PLAYER) adjPlayer=true;
-            if(!adjPlayer) continue;
-            // Find coalition partner
-            for(int adj2:ep2.adjacent){
-                Province& ep3=g_campaign.provinces[adj2];
-                if(ep3.owner!=ep2.owner) continue;
-                bool partnerAdjPlayer=false;
-                for(int adj3:ep3.adjacent) if(g_campaign.provinces[adj3].owner==FACTION_PLAYER) partnerAdjPlayer=true;
-                if(partnerAdjPlayer){
-                    coalitionAttackers.push_back(pi2);
-                    break;
-                }
-            }
-        }
-
-        for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
-            Province& ep=g_campaign.provinces[pi2];
-            if(ep.owner==FACTION_NEUTRAL||ep.owner==FACTION_PLAYER) continue;
-
-            // Random decision weighted by heuristics
-            float roll=frandMT();
-
-            bool inCoalition=false;
-            for(int ca:coalitionAttackers) if(ca==pi2){inCoalition=true;break;}
-            float attackChance=inCoalition?aggression*2.f:aggression;
-
-            if(roll<attackChance*0.4f){
-                // Attack weak neighbor
-                for(int adj:ep.adjacent){
-                    if(g_campaign.provinces[adj].owner==FACTION_PLAYER){
-                        int eStr=0; for(auto [ti,c]:ep.army) eStr+=c;
-                        int pStr=(int)g_campaign.readyUnits.size()*40;
-                        if(eStr>(int)(pStr*1.2f)){
-                            g_preBattle.provinceIdx=adj;
-                            g_preBattle.isDefense=true;
-                            g_preBattle.fogOfWar=false;
-                            g_preBattle.estimatedEnemyStrength=eStr;
-                            g_preBattle.include.clear();
-                            g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
-                            for(int j=12;j<(int)g_preBattle.include.size();j++)
-                                g_preBattle.include[j]=false;
-                            g_campaign.provinces[adj].army=ep.army;
-                            g_campaign.battlesLost=g_campaign.battlesLost; // no change yet
-                            return STATE_PRE_BATTLE;
-                        }
-                        break;
-                    }
-                }
-            } else if(roll<attackChance*0.4f+0.2f){
-                // Reinforcement transfer between adjacent enemy provinces
-                for(int adj:ep.adjacent){
-                    Province& ap=g_campaign.provinces[adj];
-                    if(ap.owner!=ep.owner||ap.army.empty()) continue;
-                    int apStr=0; for(auto [ti,c]:ap.army) apStr+=c;
-                    int epStr=0; for(auto [ti,c]:ep.army) epStr+=c;
-                    if(apStr>epStr+20&&!ap.army.empty()){
-                        // Transfer one unit group
-                        auto& transferUnit=ap.army.front();
-                        int transferAmt=transferUnit.second/4;
-                        if(transferAmt>0){
-                            bool found=false;
-                            for(auto& eu:ep.army) if(eu.first==transferUnit.first){eu.second+=transferAmt;found=true;break;}
-                            if(!found) ep.army.push_back({transferUnit.first,transferAmt});
-                            transferUnit.second-=transferAmt;
-                            if(transferUnit.second<=0) ap.army.erase(ap.army.begin());
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        // 3.4: Check victory condition (player owns 80% of provinces)
-        {
-            int totalProv=(int)g_campaign.provinces.size();
-            int playerProv=0;
-            for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
-            g_campaign.peakProvinces=std::max(g_campaign.peakProvinces,playerProv);
-            if(playerProv>=(int)(totalProv*0.8f)){
-                battleLogAdd("[Campaign] VICTORY! Empire established!");
-                return STATE_VICTORY;
-            }
-            if(playerProv==0){
-                battleLogAdd("[Campaign] DEFEAT — all provinces lost!");
-                return STATE_DEFEAT;
-            }
+        if(playerProv==0){
+            return STATE_DEFEAT;
         }
     }
     if(drawSmBtn({160,(float)(SCREEN_H-42),120,34},"CODEX",mouse)) return STATE_UNIT_CODEX;
@@ -2555,6 +2869,7 @@ static GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         g_campaign.viewedCity=g_campaign.playerProvince;
         return STATE_RECRUITMENT;
     }
+    if(drawSmBtn({420,(float)(SCREEN_H-42),140,34},"MARKETPLACE",mouse)) return STATE_MARKETPLACE;
     if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-42),120,34},"MENU",mouse,
                   {50,20,20,255},{90,38,38,255})) return STATE_MAIN_MENU;
 
@@ -3219,6 +3534,111 @@ static GameState updateDrawQuickBattleSetup(Vector2 mouse){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  STATE: MARKETPLACE (6.5: Resource trading system)
+// ═══════════════════════════════════════════════════════════════════════════
+static GameState updateDrawMarketplace(Vector2 mouse){
+    ClearBackground(C_BG);
+    for(int gx=0;gx<SCREEN_W;gx+=40) DrawLine(gx,0,gx,SCREEN_H,{20,18,14,50});
+    for(int gy=0;gy<SCREEN_H;gy+=40) DrawLine(0,gy,SCREEN_W,gy,{20,18,14,50});
+
+    DrawRectangle(0,0,SCREEN_W,50,{0,0,0,220});
+    DrawText("MARKETPLACE — Trade Resources",14,10,26,C_GOLD);
+    DrawText(TextFormat("Turn: %d  |  Current reserves shown below",g_campaign.turn),14,38,12,C_SECONDARY);
+
+    Resources& res=g_campaign.res;
+    static const char* resNames[5]={"Gold","Food","Wood","Stone","Iron"};
+    static const Color resColors[5]={{200,165,80,255},{140,100,50,255},{100,150,60,255},
+                                       {160,150,140,255},{200,100,50,255}};
+    float* resVals[5]={&res.gold,&res.food,&res.wood,&res.stone,&res.iron};
+
+    float tabX=14.f, tabY=60.f, tabW=240.f, tabH=34.f;
+    // Tabs for each resource
+    for(int i=0;i<5;i++){
+        float tx=tabX+i*(tabW+2);
+        bool sel=(g_tradeTab==i);
+        Color tc=sel?Color{40,80,80,255}:Color{20,40,40,255};
+        Color th=sel?Color{60,120,120,255}:Color{35,65,65,255};
+        if(drawSmBtn({tx,tabY,tabW,tabH},resNames[i],mouse,tc,th)) g_tradeTab=i;
+        if(sel) DrawRectangleLinesEx({tx,tabY,tabW,tabH},2,C_GOLD);
+    }
+
+    tabY+=48.f;
+    float panelH=(float)(SCREEN_H-100-50);
+
+    // Trading panel for selected resource
+    const char* resName=resNames[g_tradeTab];
+    Color resCol=resColors[g_tradeTab];
+    float* resVal=resVals[g_tradeTab];
+
+    DrawRectangle(8,(int)tabY,SCREEN_W-16,(int)panelH,{12,10,8,200});
+    DrawRectangleLinesEx({8,tabY,(float)(SCREEN_W-16),panelH},1,resCol);
+
+    float cx=20.f, cy=tabY+15.f;
+
+    // Current reserves
+    DrawText(TextFormat("Current %s: %.0f",resName,*resVal),(int)cx,(int)cy,16,C_PARCHMENT);
+    cy+=28;
+
+    // Exchange rate info
+    float rate=TRADE_RATES[g_tradeTab];
+    DrawText(TextFormat("Exchange rate: 1 %s = %.2f gold (sell)",resName,rate),
+             (int)cx,(int)cy,13,C_SECONDARY);
+    cy+=22;
+    DrawText(TextFormat("Buy: %.2f gold per unit",rate*1.3f),
+             (int)cx,(int)cy,13,resCol);
+    cy+=28;
+
+    // Amount slider
+    g_tradeAmount=drawIntSlider({cx,cy,400.f,14},g_tradeAmount,1,100,"Amount to trade:",mouse,resCol);
+    cy+=30;
+
+    float buyPrice=g_tradeAmount*rate*1.3f;
+    float sellPrice=g_tradeAmount*rate;
+
+    // Buy button
+    bool canBuy=(res.gold>=buyPrice);
+    Color buyCol=canBuy?Color{30,80,30,255}:Color{40,20,20,255};
+    Color buyColH=canBuy?Color{55,120,55,255}:Color{50,25,25,255};
+    if(drawButton({cx,cy,180,44},
+                  TextFormat("BUY %d (%.0f g)",g_tradeAmount,buyPrice),
+                  mouse,buyCol,buyColH)&&canBuy){
+        res.gold-=buyPrice;
+        *resVal+=g_tradeAmount;
+        battleLogAdd(TextFormat("[Market] Bought %d %s for %.0f gold",g_tradeAmount,resName,buyPrice));
+    }
+
+    // Sell button
+    bool canSell=(*resVal>=g_tradeAmount);
+    Color sellCol=canSell?Color{30,30,80,255}:Color{40,20,20,255};
+    Color sellColH=canSell?Color{55,55,120,255}:Color{50,25,25,255};
+    if(drawButton({cx+190,cy,180,44},
+                  TextFormat("SELL %d (%.0f g)",g_tradeAmount,sellPrice),
+                  mouse,sellCol,sellColH)&&canSell){
+        *resVal-=g_tradeAmount;
+        res.gold+=sellPrice;
+        battleLogAdd(TextFormat("[Market] Sold %d %s for %.0f gold",g_tradeAmount,resName,sellPrice));
+    }
+
+    cy+=54;
+
+    // All resources summary
+    DrawLine(20,(int)(cy+6),(int)(SCREEN_W-20),(int)(cy+6),{50,45,35,100});
+    cy+=14;
+    DrawText("All Reserves:",(int)cx,(int)cy,13,C_GOLD); cy+=16;
+    for(int i=0;i<5;i++){
+        DrawText(TextFormat("%s: %.0f",resNames[i],*resVals[i]),(int)(cx+10),(int)(cy+i*16),12,
+                 i==g_tradeTab?resColors[i]:Color{100,100,100,255});
+    }
+
+    // Bottom buttons
+    DrawRectangle(0,SCREEN_H-50,SCREEN_W,50,{0,0,0,210});
+    if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-42),116,30},"BACK",mouse,
+                  {50,25,25,255},{80,40,40,255}))
+        return STATE_CAMPAIGN_MAP;
+    return STATE_MARKETPLACE;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  STATE: MAIN MENU
 // ═══════════════════════════════════════════════════════════════════════════
 static GameState updateDrawMainMenu(Vector2 mouse){
@@ -3574,6 +3994,9 @@ int main(){
                 break;
             case STATE_DEFEAT:
                 g_state=updateDrawDefeat(mouse);
+                break;
+            case STATE_MARKETPLACE:
+                g_state=updateDrawMarketplace(mouse);
                 break;
         }
         // 4.9: Global FPS (shown in non-battle states too)
