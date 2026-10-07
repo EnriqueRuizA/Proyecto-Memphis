@@ -1,14 +1,49 @@
-NOTAS.txt
-savegame.dat
-settings.ini
-.vs/*
-.cursor/*
-.git/*
-PROMPT_MEJORAS_MEDIEVAL_CONQUEST.md
-campaign_save.dat
-campaign_0.dat
-campaign_1.dat
-campaign_2.dat
-campaign_last.dat
-PROMPT_MEJORAS_PREMIUM.md
+# ============================================================
+# .gitignore — Medieval Conquest (RTS)
+# ============================================================
 
+# --- Artefactos de compilación (no trackeados; si ya lo están,
+# --- ejecutar antes: git rm --cached <archivo>) ---
+*.exe
+*.dll
+*.lib
+*.dll.a
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# --- Carpetas de build ---
+build/
+_build/
+cmake-build/
+dist/
+release/
+
+# --- Editores / SO ---
+.vs/
+.vscode/
+.idea/
+.cursor/
+.DS_Store
+
+# --- Archivos temporales ---
+*.swp
+*.tmp
+.cache/
+*.i
+
+# --- Guardados del juego (datos personales del usuario) ---
+savegame.dat
+campaign_save.dat
+campaign_*.dat
+*.sav
+
+# --- Configuración local (se versiona settings.example.ini) ---
+settings.ini
+
+# --- Documentación interna / prompts ---
+NOTAS.txt
+PROMPT_MEJORAS_MEDIEVAL_CONQUEST.md
+PROMPT_MEJORAS_PREMIUM.md
