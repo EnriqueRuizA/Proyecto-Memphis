@@ -11,33 +11,24 @@ Un juego de estrategia en tiempo real en C++17 usando Raylib.
 ## Compilación (modular — `src/`)
 
 ```bat
-rem 1) Toolchain en PATH
-set PATH=C:\raylib\w64devkit\bin;%PATH%
+rem Un solo comando desde la raíz del repositorio:
+build.bat
 
-rem 2) Compilar los 12 módulos
-mkdir build
-g++ -std=c++17 -Isrc -O2 -c src\config.cpp   -o build\config.o
-g++ -std=c++17 -Isrc -O2 -c src\util.cpp     -o build\util.o
-g++ -std=c++17 -Isrc -O2 -c src\ui.cpp       -o build\ui.o
-g++ -std=c++17 -Isrc -O2 -c src\camera.cpp   -o build\camera.o
-g++ -std=c++17 -Isrc -O2 -c src\sprite.cpp   -o build\sprite.o
-g++ -std=c++17 -Isrc -O2 -c src\terrain.cpp  -o build\terrain.o
-g++ -std=c++17 -Isrc -O2 -c src\elements.cpp -o build\elements.o
-g++ -std=c++17 -Isrc -O2 -c src\combat.cpp   -o build\combat.o
-g++ -std=c++17 -Isrc -O2 -c src\campaign.cpp -o build\campaign.o
-g++ -std=c++17 -Isrc -O2 -c src\city.cpp     -o build\city.o
-g++ -std=c++17 -Isrc -O2 -c src\save.cpp     -o build\save.o
-g++ -std=c++17 -Isrc -O2 -c src\main.cpp     -o build\main.o
+rem Compila src\*.cpp y genera rts_game.exe en la raíz.
+rem Log completo (errores/warnings): build\build.log
+```
 
-rem 3) Enlazar (cmd/PowerShell no expande *.o: listarlos)
-g++ -o rts_game.exe build\config.o build\util.o build\ui.o build\camera.o build\sprite.o build\terrain.o build\elements.o build\combat.o build\campaign.o build\city.o build\save.o build\main.o -lraylib -lopengl32 -lgdi32 -lwinmm
+La línea manual equivalente (toolchain w64devkit en PATH):
+
+```bat
+g++ -std=c++17 -O1 -Wall -Wextra -Isrc src\*.cpp -o rts_game.exe -L"C:\raylib\raylib\src" -lraylib -lopengl32 -lgdi32 -lwinmm 2> build\build.log
 ```
 
 ## Ejecución
 
 ```bat
 rem Desde la raíz del repositorio (assets/ y settings.ini se buscan en el CWD):
-build\rts_game_mod.exe
+rts_game.exe
 ```
 
 Si `assets/sprites/` no existe, el juego arranca igualmente con los sprites
