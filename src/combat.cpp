@@ -2,6 +2,7 @@
 #include "config.h"
 #include "util.h"
 #include "ui.h"
+#include "audio.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -501,8 +502,10 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                         foeUnits[targetUnit].morale-=10.f;
                     }
                     tgt.hp-=dmg;
+                    playSfxVar(SFX_HIT_METAL0,3,0.75f);
                     if(tgt.hp<=0){
                         tgt.alive=false;
+                        playSfx(SFX_DEATH,0.85f);
                         sol.kills++;
                         g_battle.dead.push_back({tgt.pos,1.f,8.f,
                             fTd.spriteBase==SPR_CAVALRY,tgt.angle,
@@ -535,6 +538,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     bool isCross=(td.missileReload>2.5f);
                     float projSpeed=isCross?380.f:320.f;
                     g_battle.projs.push_back({sol.pos,v2scale(dir2,projSpeed),dmg,true,bu.isPlayer,isCross});
+                    playSfx(SFX_ARROW_SHOOT,0.5f);
                     sol.rangeTimer=td.missileReload;
                     sol.chargeMoveTime=0.f;
                 }

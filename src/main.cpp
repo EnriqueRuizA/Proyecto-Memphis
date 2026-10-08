@@ -1,6 +1,7 @@
 #include "config.h"
 #include "util.h"
 #include "ui.h"
+#include "audio.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -136,6 +137,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                     if(alive>0) g_battle.playerUnits[idx].selected=true;
                 }
                 g_battle.activeControlGroup=g;
+                playSfx(SFX_SELECT,0.8f,1.1f);
             }
         }
     }
@@ -161,6 +163,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
             }
             if(IsMouseButtonReleased(MOUSE_LEFT_BUTTON)){
                 g_battle.dragging=false;
+                bool gotSel=false;
                 if(g_battle.selRect.width<8&&g_battle.selRect.height<8){
                     // Single click
                     float best=9999; int bidx=-1;
@@ -168,12 +171,13 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                         float d=vdist(worldMouse,g_battle.playerUnits[i].anchorPos);
                         if(d<best&&d<40){best=d;bidx=i;}
                     }
-                    if(bidx>=0) g_battle.playerUnits[bidx].selected=true;
+                    if(bidx>=0){ g_battle.playerUnits[bidx].selected=true; gotSel=true; }
                 } else {
                     for(auto& bu:g_battle.playerUnits){
-                        if(ptInRect(bu.anchorPos,g_battle.selRect)) bu.selected=true;
+                        if(ptInRect(bu.anchorPos,g_battle.selRect)){ bu.selected=true; gotSel=true; }
                     }
                 }
+                if(gotSel) playSfx(SFX_SELECT,0.9f);
                 g_battle.selRect={};
             }
             if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
@@ -183,6 +187,8 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                     float d=vdist(worldMouse,g_battle.enemyUnits[i].anchorPos);
                     if(d<bestD&&d<40){bestD=d;eIdx=i;}
                 }
+                bool anySel=false;
+                for(auto& bu:g_battle.playerUnits) if(bu.selected){ anySel=true; break; }
 
                 // Determine if the selected units are all from the active control group
                 // (so we can preserve their saved relative positions)
@@ -274,6 +280,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                 }
                 // Any manual order clears the active control group state (selection changed intent)
                 if(eIdx<0) g_battle.activeControlGroup=-1;
+                if(anySel) playSfx(eIdx>=0?SFX_ORDER_ATTACK:SFX_ORDER_MOVE,0.9f);
             }
             // 6.6: Shift+RClick to set formation facing angle
             if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)&&IsKeyDown(KEY_LEFT_SHIFT)){
@@ -309,8 +316,10 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                     if(vdist(p.pos,sol.pos)<14.f){
                         sol.hp-=p.dmg;
                         p.alive=false;
+                        playSfx(SFX_HIT_FLESH,0.7f);
                         if(sol.hp<=0){
                             sol.alive=false;
+                            playSfx(SFX_DEATH,0.8f);
                             bool isCav=g_unitTypes[bu.typeIdx].spriteBase==SPR_CAVALRY;
                             g_battle.dead.push_back({sol.pos,1.f,8.f,isCav,
                                                      sol.angle,bu.typeIdx,
@@ -1313,11 +1322,13 @@ GameState updateDrawSettings(Vector2 mouse){
     // Master Volume
     DrawText("Master Volume",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
     s_uiSettings.masterVolume=drawFloatSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.masterVolume,0.f,1.f,"","%.2f",mouse,{80,160,80,200});
+    previewAudioVolumes(s_uiSettings.masterVolume,s_uiSettings.musicVolume);
     cy+=lineGap;
 
     // Music Volume
     DrawText("Music Volume",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
     s_uiSettings.musicVolume=drawFloatSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.musicVolume,0.f,1.f,"","%.2f",mouse,{80,120,180,200});
+    previewAudioVolumes(s_uiSettings.masterVolume,s_uiSettings.musicVolume);
     cy+=lineGap;
 
     // UI Scale
@@ -1369,6 +1380,7 @@ GameState updateDrawSettings(Vector2 mouse){
         // Apply & persist
         g_settings = s_uiSettings;
         saveSettings();
+        playSfx(SFX_UI_CONFIRM,0.9f);
 
         // Apply fullscreen + windowed resolution immediately
         bool isFs=IsWindowFullscreen();
@@ -1892,10 +1904,13 @@ GameState updateDrawMarketplace(Vector2 mouse){
     Color buyColH=canBuy?Color{55,120,55,255}:Color{50,25,25,255};
     if(drawButton({cx,cy,180,44},
                   TextFormat("BUY %d (%.0f g)",g_tradeAmount,buyPrice),
-                  mouse,buyCol,buyColH)&&canBuy){
-        res.gold-=buyPrice;
-        *resVal+=g_tradeAmount;
-        battleLogAdd(TextFormat("[Market] Bought %d %s for %.0f gold",g_tradeAmount,resName,buyPrice));
+                  mouse,buyCol,buyColH)){
+        if(canBuy){
+            res.gold-=buyPrice;
+            *resVal+=g_tradeAmount;
+            battleLogAdd(TextFormat("[Market] Bought %d %s for %.0f gold",g_tradeAmount,resName,buyPrice));
+            playSfx(SFX_COIN,0.9f);
+        } else playSfx(SFX_UI_ERROR,0.8f);
     }
 
     // Sell button
@@ -1904,10 +1919,13 @@ GameState updateDrawMarketplace(Vector2 mouse){
     Color sellColH=canSell?Color{55,55,120,255}:Color{50,25,25,255};
     if(drawButton({cx+190,cy,180,44},
                   TextFormat("SELL %d (%.0f g)",g_tradeAmount,sellPrice),
-                  mouse,sellCol,sellColH)&&canSell){
-        *resVal-=g_tradeAmount;
-        res.gold+=sellPrice;
-        battleLogAdd(TextFormat("[Market] Sold %d %s for %.0f gold",g_tradeAmount,resName,sellPrice));
+                  mouse,sellCol,sellColH)){
+        if(canSell){
+            *resVal-=g_tradeAmount;
+            res.gold+=sellPrice;
+            battleLogAdd(TextFormat("[Market] Sold %d %s for %.0f gold",g_tradeAmount,resName,sellPrice));
+            playSfx(SFX_COIN,0.9f,0.95f);
+        } else playSfx(SFX_UI_ERROR,0.8f);
     }
 
     cy+=54;
@@ -2084,6 +2102,7 @@ int main(){
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     if(g_settings.fullscreen && !IsWindowFullscreen()) ToggleFullscreen();
+    initAudio();
 
     srand((unsigned)time(nullptr)); // 1.2: seed for any remaining rand() calls
     g_battleLog.clear();
@@ -2121,6 +2140,7 @@ int main(){
         g_menuTime+=dt;
 
         Vector2 mouse=GetMousePosition();
+        updateAudio(dt);
 
         BeginDrawing();
         switch(g_state){
@@ -2196,6 +2216,7 @@ int main(){
     // Auto-save on exit if campaign active
     if(g_campaign.turn>1) saveGame();
 
+    shutdownAudio();
     CloseWindow();
     return 0;
 }

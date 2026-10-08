@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "config.h"
 #include "util.h"
+#include "audio.h"
 #include "ui.h"
 #include <vector>
 #include <string>
@@ -29,7 +30,9 @@ bool drawButton(Rectangle r,const char* lbl,Vector2 m,
     int maxW=(int)r.width-10; if(maxW<10) maxW=10;
     while(sfs>8 && tw>maxW){ sfs--; tw=MeasureTextRaw(lbl,sfs); }
     DrawTextRaw(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-sfs/2),sfs,hv?C_PARCHMENT:C_SECONDARY);
-    return hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+    bool clicked=hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+    if(clicked) playSfx(SFX_UI_CLICK,0.7f);
+    return clicked;
 }
 
 bool drawSmBtn(Rectangle r,const char* lbl,Vector2 m,
@@ -45,7 +48,9 @@ bool drawSmBtn(Rectangle r,const char* lbl,Vector2 m,
     int maxW=(int)r.width-10; if(maxW<10) maxW=10;
     while(sfs>7 && tw>maxW){ sfs--; tw=MeasureTextRaw(lbl,sfs); }
     DrawTextRaw(lbl,(int)(r.x+r.width/2-tw/2),(int)(r.y+r.height/2-sfs/2),sfs,hv?Color{255,255,255,255}:C_SECONDARY);
-    return hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+    bool clicked=hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+    if(clicked) playSfx(SFX_UI_CLICK,0.6f);
+    return clicked;
 }
 
 int drawIntSlider(Rectangle r,int val,int mn,int mx,

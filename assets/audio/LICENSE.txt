@@ -1,0 +1,29 @@
+Audio assets — licenses
+========================
+
+All sounds and music in this folder are CC0 (public domain dedication).
+Attribution is not legally required; it is recorded here for provenance.
+
+SFX — Kenney (kenney.nl), CC0
+  ui_click.ogg, ui_confirm.ogg, ui_error.ogg, ui_hover.ogg
+      → Kenney "Interface Sounds" (kenney.nl/media/pages/assets/interface-sounds)
+  hit_metal1-3.ogg, hit_flesh.ogg, death.ogg
+      → Kenney "Impact Sounds" (kenney.nl/media/pages/assets/impact-sounds)
+  coin.ogg
+      → Kenney "RPG Audio" (kenney.nl/media/pages/assets/rpg-audio)
+
+SFX — OpenGameArt, CC0
+  swing1.wav, arrow_shoot.wav
+      → "Swishes Sound Pack" by artisticdude
+        https://opengameart.org/content/swishes-sound-pack (CC0)
+
+Music — OpenGameArt, CC0
+  music_menu.wav
+      → "Epic March Loop" by Eldritch Grim
+        https://opengameart.org/content/epic-march-loop (CC0)
+  music_battle.mp3
+      → "Medieval: Battle" by RandomMind
+        https://opengameart.org/content/medieval-battle (CC0)
+  music_victory.mp3
+      → "Medieval: Victory Theme" by RandomMind
+        https://opengameart.org/content/medieval-victory-theme (CC0)
