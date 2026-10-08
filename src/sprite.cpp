@@ -226,9 +226,12 @@ static int recipeFor(const UnitTypeDef& td){
 }
 
 // Ángulo (0=este, 90=norte, y arriba) -> índice de dirección 0..7.
-// dir0 = frente del modelo (cámara norte); horario.
+// La hoja bakeada rota la cámara con yaw=d*45: fila d muestra al modelo
+// mirando a (180+45d)° (fila0 = frente a cámara/sur, fila4 = espalda/norte),
+// así que hay que desplazar +4 filas para que la fila dibujada coincida
+// con la dirección real del ángulo (fila = dir de movimiento).
 static int dirFromAngle(float a){
-    int d=(int)floorf((90.f-a)/45.f+0.5f);
+    int d=(int)floorf((90.f-a)/45.f+0.5f)+4;
     d%=8; if(d<0)d+=8;
     return d;
 }
