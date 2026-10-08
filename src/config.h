@@ -105,6 +105,9 @@ struct GameSettings {
     int   difficulty   = 1;   // 0=EASY,1=NORMAL,2=HARD
     bool  showFPS      = false;
     int   language     = 0;   // 0=EN,1=ES
+    // Realismo de combate: formacion (afecta a calcFormationSlots y separacion)
+    float formationSpacing = 26.f;  // px entre soldados (16..40)
+    int   formationPerRow  = 5;     // soldados por fila en formacion (3..10)
 };
 extern GameSettings g_settings;
 void saveSettings();

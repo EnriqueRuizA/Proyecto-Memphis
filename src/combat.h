@@ -73,7 +73,11 @@ float calcMeleeDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd,bool charge
 float calcMissileDmg(const UnitTypeDef& attTd,const UnitTypeDef& defTd);        // (:1581)
 Vector2 avoidObstacles(Vector2 pos, Vector2 targetDir, float speed, const std::vector<Rectangle>& obstacles); // (:1588)
 bool losClean(Vector2 from,Vector2 to,const std::vector<Soldier>& friendlies,int selfIdx); // (:1610)
-void separateSoldiers(std::vector<BattleUnit>& units);                          // (:1640)
+bool separateSoldiers(std::vector<BattleUnit>& units);                                // (:1640)
+bool separateContact(std::vector<BattleUnit>& a,std::vector<BattleUnit>& b);          // (:1640)
+void separateAll();          // alterna mismo-bando + cruzado hasta converger
+extern bool g_debugSoldiers;                 // F12: overlay pos+orientacion de soldados
+void drawSoldierDebug();
 std::pair<int,int> findNearestEnemySoldier(Vector2 from,
         const std::vector<BattleUnit>& enemies);                                // (:1665)
 void updateBattleUnits(std::vector<BattleUnit>& myUnits,

@@ -64,6 +64,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     // Controls
     if(IsKeyPressed(KEY_ESCAPE)) g_battle.paused=!g_battle.paused;
     if(IsKeyPressed(KEY_SPACE)) g_battle.timeScale=(g_battle.timeScale>1.f)?1.f:2.f;
+    if(IsKeyPressed(KEY_F12)) g_debugSoldiers=!g_debugSoldiers;
 
     // Camera pan/zoom/lerp (extraído a camera.cpp)
     updateBattleCamera(dt);
@@ -75,6 +76,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         drawBattlefield();
         drawAllUnits();
         fxDraw();
+        drawSoldierDebug();
         atmosDrawWorld();
         endBattleView();
         atmosDrawScreen(SCREEN_W,SCREEN_H);
@@ -305,8 +307,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         updateEnemyAI(eff);
         updateBattleUnits(g_battle.playerUnits,g_battle.enemyUnits,eff);
         updateBattleUnits(g_battle.enemyUnits,g_battle.playerUnits,eff);
-        separateSoldiers(g_battle.playerUnits);
-        separateSoldiers(g_battle.enemyUnits);
+        separateAll();
         fxUpdate(eff);
         fxBattleDust(eff);
         atmosUpdate(eff);
@@ -390,6 +391,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     }
     drawAllUnits();
     fxDraw();
+    drawSoldierDebug();
     atmosDrawWorld();
     endBattleView();
     atmosDrawScreen(SCREEN_W,SCREEN_H);
@@ -1351,6 +1353,16 @@ GameState updateDrawSettings(Vector2 mouse){
     s_uiSettings.uiScale=uiPct/100.f;
     if(s_uiSettings.uiScale<1.f) s_uiSettings.uiScale=1.f;
     if(s_uiSettings.uiScale>2.25f) s_uiSettings.uiScale=2.25f;
+    cy+=lineGap;
+
+    // Formation spacing (realismo: separacion entre soldados en batalla)
+    DrawText("Formation Spacing",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    s_uiSettings.formationSpacing=drawFloatSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.formationSpacing,16.f,40.f,"","%.0f px",mouse,{150,120,60,200});
+    cy+=lineGap;
+
+    // Soldiers per row (ancho de la linea de formacion)
+    DrawText("Soldiers per Row",(int)cx,(int)(cy-labelGap),12,C_SECONDARY);
+    s_uiSettings.formationPerRow=drawIntSlider({cx,cy,cw,uiPx(14.f)},s_uiSettings.formationPerRow,3,10,"",mouse,{120,100,160,200});
     cy+=lineGap;
 
     // Difficulty

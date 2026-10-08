@@ -122,3 +122,4 @@ struct ControlGroup {
 void drawStatBars(float x,float y,float w,float h,const UnitTypeDef& td);
 // (:1404)
 std::vector<Vector2> calcFormationSlots(Vector2 anchor,int count,float facing);
+void formationDims(int count,int* cols,int* rows);   // columnas/filas segun g_settings.formationPerRow

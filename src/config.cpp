@@ -34,6 +34,8 @@ void saveSettings(){
     fprintf(f,"difficulty %d\n",g_settings.difficulty);
     fprintf(f,"showFPS %d\n",(int)g_settings.showFPS);
     fprintf(f,"language %d\n",g_settings.language);
+    fprintf(f,"formationSpacing %.3f\n",g_settings.formationSpacing);
+    fprintf(f,"formationPerRow %d\n",g_settings.formationPerRow);
     fclose(f);
 }
 void loadSettings(){
@@ -50,9 +52,15 @@ void loadSettings(){
         else if(strcmp(key,"difficulty")==0) fscanf(f,"%d",&g_settings.difficulty);
         else if(strcmp(key,"showFPS")==0){ int v=0; fscanf(f,"%d",&v); g_settings.showFPS=(bool)v; }
         else if(strcmp(key,"language")==0) fscanf(f,"%d",&g_settings.language);
+        else if(strcmp(key,"formationSpacing")==0) fscanf(f,"%f",&g_settings.formationSpacing);
+        else if(strcmp(key,"formationPerRow")==0) fscanf(f,"%d",&g_settings.formationPerRow);
     }
     fclose(f);
     // Clamp UI scale to supported range
     if(g_settings.uiScale<1.f) g_settings.uiScale=1.f;
     if(g_settings.uiScale>2.25f) g_settings.uiScale=2.25f;
+    if(g_settings.formationSpacing<16.f) g_settings.formationSpacing=16.f;
+    if(g_settings.formationSpacing>40.f) g_settings.formationSpacing=40.f;
+    if(g_settings.formationPerRow<3) g_settings.formationPerRow=3;
+    if(g_settings.formationPerRow>10) g_settings.formationPerRow=10;
 }

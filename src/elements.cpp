@@ -99,17 +99,27 @@ void drawStatBars(float x,float y,float w,float h,const UnitTypeDef& td){
 
 //  BATTLE FORMATION HELPERS (v7.0: LINE FORMATION - rectangular 360° rotation)
 // ═══════════════════════════════════════════════════════════════════════════
+// Dimensiones de la formacion: columnas = g_settings.formationPerRow (ajustable
+// en Settings, limitado al conteo de soldados).
+void formationDims(int count,int* cols,int* rows){
+    if(count<1) count=1;
+    int c=g_settings.formationPerRow;
+    if(c<1) c=1;
+    if(c>count) c=count;
+    *cols=c;
+    *rows=(count+c-1)/c;
+}
 std::vector<Vector2> calcFormationSlots(Vector2 anchor,int count,float facing){
     std::vector<Vector2> slots;
 
     // LINE FORMATION: wide rectangular front (width >> depth)
     // Creates a proper battle line that soldiers will maintain throughout combat
-    int cols=(int)ceilf(sqrtf((float)count*2.0f)); // wider lines (2.0 ratio for wider front)
-    int rows=(int)ceilf((float)count/(float)cols);
+    int cols=1,rows=1;
+    formationDims(count,&cols,&rows);
 
-    // Spacing tuned for the baked iso sheets (~24px wide soldiers): bodies
-    // no longer fuse into a blob and the walk cycles stay readable.
-    float spacing=26.f;
+    // Spacing configurable (Settings -> formationSpacing); default 26px para
+    // que las hojas bakeadas (~24px de ancho) no se fundan en un blob.
+    float spacing=g_settings.formationSpacing;
 
     // Facing direction vector (0° = right, 90° = down, 180° = left, 270° = up)
     float rad=facing*DEG2RAD;

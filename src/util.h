@@ -23,9 +23,24 @@ inline Vector2 vnorm(Vector2 v){
 }
 inline float dirToAngle(Vector2 d){ return atan2f(-d.y,d.x)*RAD2DEG; }
 inline float lerpAngle(float c,float t,float s){
+    // s=rate*dt: sin clamp, un frame largo (dt>1/rate) rebasaba el objetivo
+    // y con s>2 oscilaba divergente (soldados girando como peonzas)
+    if(s<0.f) s=0.f;
+    if(s>1.f) s=1.f;
     float d=t-c;
-    while(d>180.f)d-=360.f; while(d<-180.f)d+=360.f;
+    while(d>180.f){d-=360.f;}
+    while(d<-180.f){d+=360.f;}
     return c+d*s;
+}
+// Giro con velocidad limitada (grados/frame): el objetivo puede oscilar
+// mucho (ruido de formacion), pero el soldado solo gira a maxStep por frame
+inline float turnAngle(float c,float t,float maxStep){
+    float d=t-c;
+    while(d>180.f){d-=360.f;}
+    while(d<-180.f){d+=360.f;}
+    if(d>maxStep) d=maxStep;
+    if(d<-maxStep) d=-maxStep;
+    return c+d;
 }
 inline float frand(){ return (float)rand()/(float)RAND_MAX; }
 inline bool ptInRect(Vector2 p,Rectangle r){

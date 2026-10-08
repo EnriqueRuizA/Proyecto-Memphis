@@ -57,13 +57,25 @@ void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
     // Player units — left side
     float py=BATTLE_H/2.f;
     float px=BATTLE_W*0.2f;
+    // Separacion entre grupos = ancho maximo de su formacion (antes paso fijo
+    // de 90px con formaciones de 104px de ancho: los slots de grupos vecinos
+    // se solapaban y los soldados se fundian en el despliegue).
+    int maxCols=1;
+    for(const auto& pg:playerGroups){
+        if(pg.first>=unitTypeCount()||pg.second<=0) continue;
+        int n=std::min(pg.second,(int)g_unitTypes[pg.first].soldierCount);
+        int cols=1,rows=1;
+        formationDims(n,&cols,&rows);
+        if(cols>maxCols) maxCols=cols;
+    }
+    float groupSpan=(float)(maxCols-1)*g_settings.formationSpacing+36.f;
     for(int gi=0;gi<(int)playerGroups.size();gi++){
         auto [typeIdx,cnt]=playerGroups[gi];
         if(typeIdx>=unitTypeCount()||cnt<=0) continue;
         const UnitTypeDef& td=g_unitTypes[typeIdx];
         BattleUnit bu{};
         bu.typeIdx=typeIdx; bu.isPlayer=true;
-        bu.anchorPos={px, py+(gi-playerGroups.size()/2.f)*90.f};
+        bu.anchorPos={px, py+(gi-playerGroups.size()/2.f)*groupSpan};
         bu.orderTarget=bu.anchorPos;
         bu.orderAttack=-1;
         bu.morale=td.morale;
@@ -95,13 +107,22 @@ void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
     // Enemy units — right side
     float ey=BATTLE_H/2.f;
     float ex2=BATTLE_W*0.8f;
+    int maxColsE=1;
+    for(const auto& pg:enemyGroups){
+        if(pg.first>=unitTypeCount()||pg.second<=0) continue;
+        int n=std::min(pg.second,(int)g_unitTypes[pg.first].soldierCount);
+        int cols=1,rows=1;
+        formationDims(n,&cols,&rows);
+        if(cols>maxColsE) maxColsE=cols;
+    }
+    float groupSpanE=(float)(maxColsE-1)*g_settings.formationSpacing+36.f;
     for(int gi=0;gi<(int)enemyGroups.size();gi++){
         auto [typeIdx,cnt]=enemyGroups[gi];
         if(typeIdx>=unitTypeCount()||cnt<=0) continue;
         const UnitTypeDef& td=g_unitTypes[typeIdx];
         BattleUnit bu{};
         bu.typeIdx=typeIdx; bu.isPlayer=false;
-        bu.anchorPos={ex2, ey+(gi-(int)enemyGroups.size()/2.f)*90.f};
+        bu.anchorPos={ex2, ey+(gi-(int)enemyGroups.size()/2.f)*groupSpanE};
         bu.orderTarget=bu.anchorPos;
         bu.orderAttack=-1;
         bu.morale=td.morale;
@@ -207,27 +228,142 @@ bool losClean(Vector2 from,Vector2 to,const std::vector<Soldier>& friendlies,int
 // ═══════════════════════════════════════════════════════════════════════════
 //  BATTLE UPDATE
 // ═══════════════════════════════════════════════════════════════════════════
-void separateSoldiers(std::vector<BattleUnit>& units){
-    // Separation within same side
-    float minD=18.f;
-    for(auto& bu:units){
-        for(int i=0;i<(int)bu.soldiers.size();i++){
-            if(!bu.soldiers[i].alive) continue;
-            // Against same unit
-            for(int j=i+1;j<(int)bu.soldiers.size();j++){
-                if(!bu.soldiers[j].alive) continue;
-                float d=vdist(bu.soldiers[i].pos,bu.soldiers[j].pos);
+bool separateSoldiers(std::vector<BattleUnit>& units){
+    // Separation between ALL friendly soldiers, crossing groups (v9: antes
+    // solo separaba dentro de cada grupo, asi que soldados de grupos
+    // distintos del mismo bando podian fundirse en un mismo punto).
+    // minD = espaciado de formacion del jugador (Settings -> formationSpacing).
+    // V10: 4 pasadas con push 0.8 hasta converger (una sola pasada dejaba
+    // cadenas de vecindad a ~17px en el cuerpo a cuerpo).
+    float minD=g_settings.formationSpacing;
+    std::vector<Soldier*> all;
+    for(auto& bu:units)
+        for(auto& s:bu.soldiers)
+            if(s.alive) all.push_back(&s);
+    bool any=false;
+    for(int pass=0;pass<4;pass++){
+        bool moved=false;
+        for(int i=0;i<(int)all.size();i++){
+            for(int j=i+1;j<(int)all.size();j++){
+                float d=vdist(all[i]->pos,all[j]->pos);
                 if(d<minD&&d>0.001f){
-                    float push=(minD-d)*0.35f;
-                    Vector2 dir2=vnorm(v2sub(bu.soldiers[j].pos,bu.soldiers[i].pos));
-                    bu.soldiers[i].pos=v2sub(bu.soldiers[i].pos,v2scale(dir2,push));
-                    bu.soldiers[j].pos=v2add(bu.soldiers[j].pos,v2scale(dir2,push));
+                    float push=(minD-d)*0.8f;
+                    Vector2 dir2=vnorm(v2sub(all[j]->pos,all[i]->pos));
+                    all[i]->pos=v2sub(all[i]->pos,v2scale(dir2,push));
+                    all[j]->pos=v2add(all[j]->pos,v2scale(dir2,push));
+                    moved=true; any=true;
                 }
             }
-            // Clamp
-            bu.soldiers[i].pos.x=std::max(8.f,std::min((float)BATTLE_W-8,bu.soldiers[i].pos.x));
-            bu.soldiers[i].pos.y=std::max(8.f,std::min((float)BATTLE_H-8,bu.soldiers[i].pos.y));
         }
+        if(!moved) break;
+    }
+    for(auto* s:all){
+        s->pos.x=std::max(8.f,std::min((float)BATTLE_W-8,s->pos.x));
+        s->pos.y=std::max(8.f,std::min((float)BATTLE_H-8,s->pos.y));
+    }
+    return any;
+}
+
+bool separateContact(std::vector<BattleUnit>& a,std::vector<BattleUnit>& b){
+    // Contacto entre bandos: distancia menor para que las lineas se toquen
+    // sin fundirse (antes no habia ninguna: los cuerpos podian apilarse).
+    float minD=14.f;
+    bool any=false;
+    for(int pass=0;pass<2;pass++){
+    for(auto& buA:a){
+        for(auto& sa:buA.soldiers){
+            if(!sa.alive) continue;
+            for(auto& buB:b){
+                for(auto& sb:buB.soldiers){
+                    if(!sb.alive) continue;
+                    float d=vdist(sa.pos,sb.pos);
+                    if(d<minD&&d>0.001f){
+                        float push=(minD-d)*0.8f;
+                        Vector2 dir2=vnorm(v2sub(sb.pos,sa.pos));
+                        sa.pos=v2sub(sa.pos,v2scale(dir2,push));
+                        sb.pos=v2add(sb.pos,v2scale(dir2,push));
+                        any=true;
+                    }
+                }
+            }
+        }
+    }
+    }
+    return any;
+}
+
+void separateAll(){
+    // Proyecciones alternadas: mismo-bando (26) y cruzado (14) se perturban
+    // mutuamente; alternar hasta que ninguno tenga violaciones alcanza un
+    // estado factible con ambas restricciones satisfechas.
+    for(int k=0;k<12;k++){
+        bool m=separateSoldiers(g_battle.playerUnits);
+        m=separateSoldiers(g_battle.enemyUnits)||m;
+        m=separateContact(g_battle.playerUnits,g_battle.enemyUnits)||m;
+        if(!m) break;
+    }
+}
+
+// F12: overlay de depuracion - punto por soldado + linea de orientacion.
+// Permite verificar programaticamente solapamiento (distancia entre puntos)
+// y giros espurios (cambio de linea entre frames consecutivos).
+bool g_debugSoldiers=false;
+static void paintTeam(std::vector<BattleUnit>& us,Color c){
+    for(auto& bu:us){
+        for(auto& s:bu.soldiers){
+            if(!s.alive) continue;
+            DrawCircleV(s.pos,3,c);
+            float rad=s.angle*DEG2RAD;
+            Vector2 tip={s.pos.x+cosf(rad)*14.f,s.pos.y-sinf(rad)*14.f};
+            DrawLineEx(s.pos,tip,2.f,c);
+        }
+    }
+}
+void drawSoldierDebug(){
+    if(!g_debugSoldiers) return;
+    paintTeam(g_battle.playerUnits,Color{0,255,255,255}); // cian = jugador
+    paintTeam(g_battle.enemyUnits,Color{255,0,255,255});   // magenta = enemigo
+    // Valor efectivo de spacing + marcas blancas en pares <18px (solapamiento)
+    DrawText(TextFormat("spacing=%.0f",g_settings.formationSpacing),10,110,16,WHITE);
+    std::vector<Vector2> ps;
+    std::vector<char> tm; // 0=jugador 1=enemigo
+    for(auto& bu:g_battle.playerUnits) for(auto& s:bu.soldiers) if(s.alive){ ps.push_back(s.pos); tm.push_back(0); }
+    for(auto& bu:g_battle.enemyUnits)  for(auto& s:bu.soldiers) if(s.alive){ ps.push_back(s.pos); tm.push_back(1); }
+    float ms=1e9f,mc=1e9f; Vector2 msA={0,0},msB={0,0};
+    for(int i=0;i<(int)ps.size();i++){
+        for(int j=i+1;j<(int)ps.size();j++){
+            float d=vdist(ps[i],ps[j]);
+            if(tm[i]==tm[j]){ if(d<ms){ms=d;msA=ps[i];msB=ps[j];} }
+            else if(d<mc) mc=d;
+            // marcador blanco: mismo bando <20 o cruzado <12 (solapamiento real)
+            bool bad=(tm[i]==tm[j])?d<20.f:d<12.f;
+            if(bad&&d>0.001f){
+                DrawCircleV({(ps[i].x+ps[j].x)*0.5f,(ps[i].y+ps[j].y)*0.5f},7,WHITE);
+            }
+        }
+    }
+    FILE* fp=fopen("build/dist_log.txt","a");
+    if(fp){
+        // maximo giro por frame entre frames consecutivos (spin de peonza)
+        static std::vector<float> prevAng;
+        std::vector<float> cur; cur.reserve(ps.size());
+        std::vector<unsigned char> stv; stv.reserve(ps.size());
+        for(auto& bu:g_battle.playerUnits) for(auto& s:bu.soldiers) if(s.alive){ cur.push_back(s.angle); stv.push_back((unsigned char)s.state); }
+        for(auto& bu:g_battle.enemyUnits)  for(auto& s:bu.soldiers) if(s.alive){ cur.push_back(s.angle); stv.push_back((unsigned char)s.state); }
+        float maxd=0.f; int big=0; int bst[8]={0,0,0,0,0,0,0,0};
+        if(prevAng.size()==cur.size()){
+            for(int i=0;i<(int)cur.size();i++){
+                float d=fmodf(fabsf(cur[i]-prevAng[i]),360.f);
+                if(d>180.f) d=360.f-d;
+                if(d>maxd) maxd=d;
+                if(d>15.f){ big++; if(stv[i]<8) bst[stv[i]]++; }
+            }
+        }
+        prevAng=cur;
+        fprintf(fp,"sp=%.0f row=%d zoom=%.2f same=%.1f cross=%.1f n=%d maxdA=%.1f big=%d st=%d,%d,%d,%d,%d,%d a=(%.0f,%.0f) b=(%.0f,%.0f)\n",
+                    g_settings.formationSpacing,g_settings.formationPerRow,g_battle.cam.zoom,
+                    ms,mc,(int)ps.size(),maxd,big,bst[0],bst[1],bst[2],bst[3],bst[4],bst[5],msA.x,msA.y,msB.x,msB.y);
+        fclose(fp);
     }
 }
 
@@ -248,6 +384,10 @@ std::pair<int,int> findNearestEnemySoldier(Vector2 from,
 void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                                std::vector<BattleUnit>& foeUnits,
                                float dt){
+    // Clamp del paso de movimiento: en frames largos (capturas de pantalla,
+    // hitches) un soldado podia moverse mas de un cuadro por frame y superar
+    // el empuje de separateSoldiers, colapsando el cuerpo a cuerpo.
+    const float mdt=std::min(dt,0.05f);
     for(int ui=0;ui<(int)myUnits.size();ui++){
         BattleUnit& bu=myUnits[ui];
         if(bu.typeIdx>=unitTypeCount()) continue;
@@ -288,9 +428,9 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 if(!sol.alive) continue;
                 sol.state=SS_FLEEING;
                 Vector2 away=vnorm(v2sub(sol.pos,foeCenter));
-                sol.pos=v2add(sol.pos,v2scale(away,td.speed*1.5f*dt));
+                sol.pos=v2add(sol.pos,v2scale(away,td.speed*1.5f*mdt));
                 sol.angleTarget=dirToAngle(away);
-                sol.angle=lerpAngle(sol.angle,sol.angleTarget,8.f*dt);
+                sol.angle=turnAngle(sol.angle,sol.angleTarget,300.f*mdt);
             }
             continue;
         }
@@ -315,7 +455,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
             float distToTarget=vdist(bu.anchorPos,bu.orderTarget);
 
             if(distToTarget>15.f){
-                desiredAnchor=v2add(bu.anchorPos,v2scale(moveDir,td.speed*dt));
+                desiredAnchor=v2add(bu.anchorPos,v2scale(moveDir,td.speed*mdt));
                 bu.formationFacing=dirToAngle(moveDir);
             } else {
                 // Arrived at target
@@ -340,11 +480,22 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 Vector2 toEnemy=vnorm(v2sub(foeUnits[targetIdx].anchorPos,bu.anchorPos));
                 float distToEnemy=vdist(bu.anchorPos,foeUnits[targetIdx].anchorPos);
 
-                // Move toward enemy at full speed until close engagement (v8.2: AGGRESSIVE)
-                // This prevents units from orbiting instead of engaging
-                float engagementDistance=70.f; // Reduced from 100px for faster engagement
+                // Move toward enemy until the battle lines meet at striking
+                // distance WITHOUT interpenetrating (v9: engagement derived
+                // from both formation depths, was a fixed 70px which made the
+                // front rows overlap and the melee turn into a mosh pit).
+                int foeTi=(foeUnits[targetIdx].typeIdx>=0
+                            &&foeUnits[targetIdx].typeIdx<unitTypeCount())
+                           ?foeUnits[targetIdx].typeIdx:bu.typeIdx;
+                int mc=1,mr=1,fc=1,fr=1;
+                formationDims((int)bu.soldiers.size(),&mc,&mr);
+                formationDims((int)foeUnits[targetIdx].soldiers.size(),&fc,&fr);
+                float sp=g_settings.formationSpacing;
+                float engagementDistance=
+                    (float)(mr-1)*sp+(float)(fr-1)*sp
+                    +soldierMeleeRadius(td)+soldierMeleeRadius(g_unitTypes[foeTi])+6.f;
                 if(distToEnemy>engagementDistance){
-                    desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*dt));
+                    desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*mdt));
                 }
 
                 // Rotate formation to face enemy
@@ -457,7 +608,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     toSlot=avoidObstacles(sol.pos,toSlot,td.speed,g_battle.obstacles);
                     // v8.2: Fast movement - linear instead of deceleration curve
                     // Soldiers move at FULL speed toward their slot
-                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*dt));
+                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*mdt));
                     sol.angleTarget=dirToAngle(toSlot);
                     sol.chargeMoveTime+=dt;
                     if(sol.chargeMoveTime>0.8f) sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
@@ -465,7 +616,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     sol.state=SS_IDLE;
                     sol.chargeMoveTime=0.f;
                 }
-                sol.angle=lerpAngle(sol.angle,sol.angleTarget,10.f*dt);
+                sol.angle=turnAngle(sol.angle,sol.angleTarget,300.f*mdt);
                 continue;  // Skip combat logic if no target
             }
 
@@ -483,19 +634,16 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 sol.inMelee=true;
                 sol.state=SS_ATTACKING_MELEE;
 
-                // FIX: radius fixed per soldier index (no random per frame), time from GetTime()
-                float orbitRadius=20.f+(float)(si%4)*4.f;
-                float orbitSpeed=2.5f;
-                float timeFactor=(float)GetTime()+(float)si*0.7f;
-                float orbitAngle=timeFactor*orbitSpeed;
-                Vector2 orbitPos={
-                    tgt.pos.x + cosf(orbitAngle)*orbitRadius,
-                    tgt.pos.y + sinf(orbitAngle)*orbitRadius
-                };
-
-                // Move toward orbital position (not rigid slot)
-                Vector2 toOrbit=vnorm(v2sub(orbitPos,sol.pos));
-                sol.pos=v2add(sol.pos,v2scale(toOrbit,td.speed*0.4f*dt));  // Slower movement in melee
+                // Frente estable en cuerpo a cuerpo: cerrar a distancia de
+                // golpe y aguantar la linea. Sin orbitacion (v9): antes cada
+                // soldado giraba alrededor del objetivo a 2.5 rad/s y el sprite
+                // lo seguia -> unidades girando como peonzas en medio del combate.
+                if(dist<meleeD*0.7f){
+                    Vector2 back=vnorm(v2sub(sol.pos,tgt.pos));
+                    sol.pos=v2add(sol.pos,v2scale(back,td.speed*0.5f*mdt));
+                }else if(dist>meleeD*0.95f){
+                    sol.pos=v2add(sol.pos,v2scale(dir2,td.speed*0.5f*mdt));
+                }
 
                 if(sol.meleeTimer<=0){
                     bool chargeBonus=sol.chargeReady&&td.spriteBase==SPR_CAVALRY;
@@ -559,7 +707,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     Vector2 toSlot=vnorm(v2sub(sol.formationSlot,sol.pos));
                     toSlot=avoidObstacles(sol.pos,toSlot,td.speed,g_battle.obstacles);
                     // v8.2: Fast movement - no deceleration curve
-                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*dt));
+                    sol.pos=v2add(sol.pos,v2scale(toSlot,td.speed*mdt));
                     sol.angleTarget=dirToAngle(toSlot);
                     sol.chargeMoveTime+=dt;
                     if(sol.chargeMoveTime>0.8f) sol.chargeReady=(td.spriteBase==SPR_CAVALRY);
@@ -569,7 +717,7 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 }
             }
 
-            sol.angle=lerpAngle(sol.angle,sol.angleTarget,10.f*dt);
+            sol.angle=turnAngle(sol.angle,sol.angleTarget,300.f*mdt);
         }
 
         // Update group state based on soldier activity
