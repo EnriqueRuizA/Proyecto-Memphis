@@ -504,7 +504,10 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     if(tgt.hp<=0){
                         tgt.alive=false;
                         sol.kills++;
-                        g_battle.dead.push_back({tgt.pos,1.f,8.f,fTd.spriteBase==SPR_CAVALRY});
+                        g_battle.dead.push_back({tgt.pos,1.f,8.f,
+                            fTd.spriteBase==SPR_CAVALRY,tgt.angle,
+                            foeUnits[targetUnit].typeIdx,
+                            foeUnits[targetUnit].isPlayer?0:1});
                         if(fTd.soldierCount>0){
                             char logbuf[128];
                             snprintf(logbuf,127,"[T%d] %s soldier slain by %s",
@@ -752,8 +755,15 @@ void drawBattlefield(){
 }
 
 void drawAllUnits(){
+    // Reloj de animación (se congela en pausa; con speed x2 corre al doble)
+    static float s_animClock=0.f;
+    s_animClock+=GetFrameTime()*(g_battle.paused?0.f:g_battle.timeScale);
+
     // Dead markers
     for(auto& d:g_battle.dead){
+        // Hoja iso de muerte (Fase 2); si no, el blob generico
+        if(drawUnitDeath(d.typeIdx,d.team,d.pos,d.angle,0.65f,8.f-d.timer,d.alpha))
+            continue;
         int a=(int)(d.alpha*160);
         Color dc={60,20,20,(unsigned char)a};
         if(d.isCavalry){
@@ -806,13 +816,19 @@ void drawAllUnits(){
                         {180,40,40,40});
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
-            drawUnit(bu.typeIdx,1,sol.pos,sol.angle,0.65f,true,true);
+            int anim=SS_MOVING_SLOT==sol.state||SS_MOVING_TARGET==sol.state||
+                     SS_FLEEING==sol.state?UA_WALK:
+                     (sol.state==SS_ATTACKING_MELEE||sol.state==SS_ATTACKING_RANGED)?
+                     UA_ATTACK:UA_IDLE;
+            float phase=fmodf(sol.pos.x*0.37f+sol.pos.y*0.73f,10.f); // desincroniza
+            drawUnit(bu.typeIdx,1,sol.pos,sol.angle,0.65f,true,true,
+                     anim,s_animClock+phase);
             // 3.5: HP bar only when damaged
             if(sol.hp<td.hpPerSoldier){
                 float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
-                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)bw,2,DARKGRAY);
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-unitHeadOffset(bu.typeIdx,0.65f)-3),(int)bw,2,DARKGRAY);
                 Color hc=ratio>0.5f?Color{0,228,48,255}:ratio>0.25f?Color{253,249,0,255}:Color{230,41,55,255};
-                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)(bw*ratio),2,hc);
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-unitHeadOffset(bu.typeIdx,0.65f)-3),(int)(bw*ratio),2,hc);
             }
         }
         // Morale bar
@@ -841,13 +857,19 @@ void drawAllUnits(){
         }
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
-            drawUnit(bu.typeIdx,0,sol.pos,sol.angle,0.65f,bu.selected,true);
+            int anim=SS_MOVING_SLOT==sol.state||SS_MOVING_TARGET==sol.state||
+                     SS_FLEEING==sol.state?UA_WALK:
+                     (sol.state==SS_ATTACKING_MELEE||sol.state==SS_ATTACKING_RANGED)?
+                     UA_ATTACK:UA_IDLE;
+            float phase=fmodf(sol.pos.x*0.37f+sol.pos.y*0.73f,10.f); // desincroniza
+            drawUnit(bu.typeIdx,0,sol.pos,sol.angle,0.65f,bu.selected,true,
+                     anim,s_animClock+phase);
             // 3.5: HP bar only when damaged
             if(sol.hp<td.hpPerSoldier){
                 float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
-                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)bw,2,DARKGRAY);
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-unitHeadOffset(bu.typeIdx,0.65f)-3),(int)bw,2,DARKGRAY);
                 Color hc=ratio>0.5f?Color{0,228,48,255}:ratio>0.25f?Color{253,249,0,255}:Color{230,41,55,255};
-                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-14),(int)(bw*ratio),2,hc);
+                DrawRectangle((int)(sol.pos.x-bw/2),(int)(sol.pos.y-unitHeadOffset(bu.typeIdx,0.65f)-3),(int)(bw*ratio),2,hc);
             }
         }
         // 6.2: Veterancy stars above anchor
@@ -928,8 +950,8 @@ void drawBattleHUD(Vector2 mouse){
         // Portrait box
         DrawRectangle(8,hudY+6,58,58,{td.r,td.g,td.b,100});
         DrawRectangleLinesEx({8,(float)(hudY+6),58,58},2,C_GOLD);
-        drawUnit(sel->typeIdx,0,{37.f,(float)(hudY+35)},
-                 g_menuTime*30.f,1.4f,true,false);
+        drawUnit(sel->typeIdx,0,{37.f,(float)(hudY+61)},
+                 g_menuTime*30.f,1.15f,true,false,UA_IDLE,g_menuTime);
         // Info
         DrawText(td.name,72,hudY+8,15,C_PARCHMENT);
         // HP bar

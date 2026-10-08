@@ -107,7 +107,9 @@ std::vector<Vector2> calcFormationSlots(Vector2 anchor,int count,float facing){
     int cols=(int)ceilf(sqrtf((float)count*2.0f)); // wider lines (2.0 ratio for wider front)
     int rows=(int)ceilf((float)count/(float)cols);
 
-    float spacing=15.f;  // tight spacing for compact line formation
+    // Spacing tuned for the baked iso sheets (~24px wide soldiers): bodies
+    // no longer fuse into a blob and the walk cycles stay readable.
+    float spacing=26.f;
 
     // Facing direction vector (0° = right, 90° = down, 180° = left, 270° = up)
     float rad=facing*DEG2RAD;
@@ -125,7 +127,7 @@ std::vector<Vector2> calcFormationSlots(Vector2 anchor,int count,float facing){
             // - lateral (ox): across the front width
             // - depth (oy): depth into the formation
             float ox=(c-(cols-1)*0.5f)*spacing;  // lateral spacing across front
-            float oy=r*spacing*0.85f;             // depth spacing (slightly compressed)
+            float oy=r*spacing;                   // depth: full spacing (no overlap)
 
             // Calculate slot position: move from anchor along right and forward axes
             Vector2 slot={

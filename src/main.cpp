@@ -312,7 +312,9 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                         if(sol.hp<=0){
                             sol.alive=false;
                             bool isCav=g_unitTypes[bu.typeIdx].spriteBase==SPR_CAVALRY;
-                            g_battle.dead.push_back({sol.pos,1.f,8.f,isCav});
+                            g_battle.dead.push_back({sol.pos,1.f,8.f,isCav,
+                                                     sol.angle,bu.typeIdx,
+                                                     bu.isPlayer?0:1});
                         }
                         break;
                     }
@@ -1168,10 +1170,12 @@ GameState updateDrawUnitCodex(Vector2 mouse,float dt){
         DrawText(td.name,(int)cx,(int)cy,22,C_GOLD); cy+=30;
         DrawLine((int)cx,(int)cy,(int)(SCREEN_W-10),(int)cy,{80,65,30,120}); cy+=10;
 
-        // Sprite
+        // Sprite (pies anclados: se baja para centrar el cuerpo en el círculo)
         Vector2 sprCenter={(float)(SCREEN_W-100),(float)140};
-        drawUnit(g_codexIdx,0,sprCenter,g_codexAngle,2.5f,true,false);
-        DrawCircleLines((int)sprCenter.x,(int)sprCenter.y,55,{80,70,50,80});
+        sprCenter.y+=unitHeadOffset(g_codexIdx,2.5f)*0.5f;
+        drawUnit(g_codexIdx,0,sprCenter,g_codexAngle,2.5f,true,false,
+                 UA_IDLE,g_menuTime);
+        DrawCircleLines((int)(SCREEN_W-100),140,55,{80,70,50,80});
 
         // Lore — word wrapped (3.8)
         drawWrappedText(td.lore,(int)cx,(int)cy,(int)(SCREEN_W-contentX-120),12,C_SECONDARY);
@@ -1632,7 +1636,9 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
 
         if(g_editTypeIdx>=0&&g_editTypeIdx<unitTypeCount()){
             Vector2 center={rx+rightContentW/2.f, rightDrawY(ry+uiPx(120.f))};
-            drawUnit(g_editTypeIdx,0,center,g_editorPreviewAngle,3.f,true,false);
+            float feetY=center.y+unitHeadOffset(g_editTypeIdx,3.f)*0.5f;
+            drawUnit(g_editTypeIdx,0,{center.x,feetY},g_editorPreviewAngle,3.f,
+                     true,false,UA_IDLE,g_menuTime);
             DrawCircleLines((int)center.x,(int)center.y,(int)uiPx(60.f),{100,100,200,60});
         }
 

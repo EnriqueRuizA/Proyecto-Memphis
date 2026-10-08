@@ -106,6 +106,9 @@ struct DeadMarker {
     float   alpha;
     float   timer;
     bool    isCavalry;
+    float   angle;      // facing al morir (hoja de muerte iso, Fase 2)
+    int     typeIdx;    // tipo de unidad muerta; -1 = sin hoja
+    int     team;       // 0=aliado, 1=enemigo
 };
 
 // (:601-605)

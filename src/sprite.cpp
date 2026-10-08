@@ -202,6 +202,83 @@ void rebuildTexture(int idx){
 static bool      s_sheetsLoaded=false;
 static Texture2D s_sheets[2][5]; // [equipo][rol]
 
+// ── Hojas isométricas bakeadas (assets/units/, KayKit CC0) ──────────────────
+// tools/bake_sprites genera 8 unidades x 4 anims x 2 equipos, 8 direcciones.
+// Se cargan a media resolución (celdas 80x100) para no gastar VRAM.
+static bool s_isoLoaded=false;
+static Texture2D s_iso[2][8][UA_COUNT];
+static const int   s_isoCols[UA_COUNT]={4,8,6,8};          // frames por anim (bake)
+static const char* s_animFile[UA_COUNT]={"idle","walk","attack","death"};
+static const char* s_recipe[8]={"spear","axe","poleaxe","dismounted",
+                                "bow","crossbow","mounted","knights"};
+static const int   ISO_CELL_W=80, ISO_CELL_H=100;          // 160x200 bake / 2
+
+// tipo de unidad -> receta bakeada (mismo orden que RECIPES en bake_sprites)
+static int recipeFor(const UnitTypeDef& td){
+    if(td.spriteBase==SPR_RANGED)  return (td.range>0&&td.missileReload>2.5f)?5:4;
+    if(td.spriteBase==SPR_CAVALRY) return td.armor>=20?7:6; // Knights vs Mounted
+    switch(td.weaponHint){
+        case 0:  return 0; // spear
+        case 1:  return 1; // axe
+        case 2:  return 2; // poleaxe
+        default: return 3; // dismounted (espada+escudo)
+    }
+}
+
+// Ángulo (0=este, 90=norte, y arriba) -> índice de dirección 0..7.
+// dir0 = frente del modelo (cámara norte); horario.
+static int dirFromAngle(float a){
+    int d=(int)floorf((90.f-a)/45.f+0.5f);
+    d%=8; if(d<0)d+=8;
+    return d;
+}
+
+static void freeIso(){
+    for(int t=0;t<2;t++)
+        for(int r=0;r<8;r++)
+            for(int a=0;a<UA_COUNT;a++)
+                if(s_iso[t][r][a].id>0){
+                    UnloadTexture(s_iso[t][r][a]);
+                    s_iso[t][r][a]=Texture2D{};
+                }
+    s_isoLoaded=false;
+}
+
+static bool loadIsoSheets(){
+    for(int t=0;t<2;t++){
+        for(int r=0;r<8;r++){
+            for(int a=0;a<UA_COUNT;a++){
+                char path[160];
+                snprintf(path,sizeof(path),"assets/units/%s_%s_%c.png",
+                         s_recipe[r],s_animFile[a],t?'e':'p');
+                if(!FileExists(path)){
+                    TraceLog(LOG_INFO,"[iso] falta %s — reserva Kenney/procedural",path);
+                    freeIso();
+                    return false;
+                }
+                Image img=LoadImage(path);
+                if(img.width<=0){
+                    TraceLog(LOG_WARNING,"[iso] error leyendo %s",path);
+                    freeIso();
+                    return false;
+                }
+                ImageResize(&img,img.width/2,img.height/2);
+                Texture2D tx=LoadTextureFromImage(img);
+                UnloadImage(img);
+                if(tx.id==0){
+                    TraceLog(LOG_WARNING,"[iso] error subiendo %s",path);
+                    freeIso();
+                    return false;
+                }
+                SetTextureFilter(tx,TEXTURE_FILTER_BILINEAR);
+                s_iso[t][r][a]=tx;
+            }
+        }
+    }
+    TraceLog(LOG_INFO,"[iso] 64 hojas bakeadas cargadas desde assets/units/");
+    return true;
+}
+
 static int sheetRoleFor(const UnitTypeDef& td){
     if(td.spriteBase==SPR_RANGED)  return 4; // archer
     if(td.spriteBase==SPR_CAVALRY) return 1; // jinete a pie
@@ -221,7 +298,8 @@ static void freeSheets(){
 }
 
 bool loadUnitSheets(){
-    if(s_sheetsLoaded) return true;
+    if(s_isoLoaded||s_sheetsLoaded) return true;
+    if(loadIsoSheets()){ s_isoLoaded=true; return true; }
     static const char* pref[2]={"p_","e_"};
     static const char* role[5]={"spear","sword","axe","priest","archer"};
     for(int t=0;t<2;t++){
@@ -248,11 +326,12 @@ bool loadUnitSheets(){
     return true;
 }
 
-void     unloadUnitSheets(){ freeSheets(); }
-bool     unitSheetsActive(){ return s_sheetsLoaded; }
+void     unloadUnitSheets(){ freeIso(); freeSheets(); }
+bool     unitSheetsActive(){ return s_isoLoaded||s_sheetsLoaded; }
 
 Texture2D unitTexture(int typeIdx,int team){
-    if(s_sheetsLoaded) return s_sheets[team?1:0][sheetRoleFor(g_unitTypes[typeIdx])];
+    if(s_isoLoaded)      return s_iso[team?1:0][recipeFor(g_unitTypes[typeIdx])][UA_IDLE];
+    if(s_sheetsLoaded)   return s_sheets[team?1:0][sheetRoleFor(g_unitTypes[typeIdx])];
     return team? g_enemyTextures[typeIdx] : g_playerTextures[typeIdx];
 }
 
@@ -267,6 +346,22 @@ static void drawPennant(Vector2 pos,float s,int team){
     DrawTriangle(a,d,b,c); // garantiza visibilidad ante culling de winding
 }
 
+// Altura de la cabeza sobre los pies (apoyo en pos.y) para las hojas iso
+float unitHeadOffset(int typeIdx,float scale){
+    const UnitTypeDef& td=g_unitTypes[typeIdx];
+    float fh=67.f*scale;
+    if(td.spriteBase==SPR_CAVALRY) fh*=1.18f;
+    return 0.70f*fh;
+}
+
+// Geometría común de una celda iso dibujada con los pies en pos
+static void isoDst(const UnitTypeDef& td,Vector2 pos,float scale,Rectangle& dst){
+    float fh=67.f*scale;
+    if(td.spriteBase==SPR_CAVALRY) fh*=1.18f;
+    float fw=fh*0.8f;                       // celda 160x200
+    dst={pos.x-fw*0.5f,pos.y-fh*0.88f,fw,fh};
+}
+
 static void drawSheetSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale,
                             Color tint,bool shadow){
     float s=32.f*scale;
@@ -277,9 +372,25 @@ static void drawSheetSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale
 }
 
 void drawUnit(int typeIdx,int team,Vector2 pos,float angleDeg,float scale,
-              bool bright,bool shadow){
+              bool bright,bool shadow,int anim,float animTime){
     const UnitTypeDef& td=g_unitTypes[typeIdx];
-    if(s_sheetsLoaded){
+    if(anim<0) anim=0;
+    if(anim>=UA_COUNT) anim=UA_COUNT-1;
+    if(s_isoLoaded){
+        int rec=recipeFor(td);
+        int dir=dirFromAngle(angleDeg);
+        int cols=s_isoCols[anim];
+        float fps=(anim==UA_WALK)?10.f:(anim==UA_ATTACK)?9.f:5.f; // idle lento
+        int frame=(int)(animTime*fps)%cols;
+        if(frame<0) frame+=cols;
+        Color tint=bright?WHITE:Color{210,210,210,255};
+        Rectangle dst; isoDst(td,pos,scale,dst);
+        if(shadow) DrawCircleV({pos.x+2,pos.y+2},(int)(dst.height*0.13f),Color{0,0,0,55});
+        Rectangle src={(float)(frame*ISO_CELL_W),(float)(dir*ISO_CELL_H),
+                       (float)ISO_CELL_W,(float)ISO_CELL_H};
+        DrawTexturePro(s_iso[team?1:0][rec][anim],src,dst,{0,0},0.f,tint);
+        if(td.spriteBase==SPR_CAVALRY) drawPennant(pos,dst.height*1.65f,team);
+    }else if(s_sheetsLoaded){
         float sc=scale*1.35f;                        // los lienzos son64px con margen
         if(td.spriteBase==SPR_CAVALRY) sc*=1.18f;    // caballería: un punto mayor
         Color tint=bright?WHITE:Color{210,210,210,255};
@@ -290,4 +401,22 @@ void drawUnit(int typeIdx,int team,Vector2 pos,float angleDeg,float scale,
         drawSoldierSprite(team?g_enemyTextures[typeIdx]:g_playerTextures[typeIdx],
                           pos,angleDeg,scale,tint,shadow);
     }
+}
+
+bool drawUnitDeath(int typeIdx,int team,Vector2 pos,float angleDeg,
+                   float scale,float age,float alpha){
+    if(!s_isoLoaded||typeIdx<0||typeIdx>=unitTypeCount()) return false;
+    const UnitTypeDef& td=g_unitTypes[typeIdx];
+    int rec=recipeFor(td);
+    int dir=dirFromAngle(angleDeg);
+    int cols=s_isoCols[UA_DEAD];
+    int frame=(int)(age*12.f);
+    if(frame<0) frame=0;
+    if(frame>=cols) frame=cols-1;              // última pose = cadáver
+    unsigned char a=(unsigned char)(alpha<=0.f?0:alpha>=1.f?255:alpha*255);
+    Rectangle dst; isoDst(td,pos,scale,dst);
+    Rectangle src={(float)(frame*ISO_CELL_W),(float)(dir*ISO_CELL_H),
+                   (float)ISO_CELL_W,(float)ISO_CELL_H};
+    DrawTexturePro(s_iso[team?1:0][rec][UA_DEAD],src,dst,{0,0},0.f,{255,255,255,a});
+    return true;
 }
