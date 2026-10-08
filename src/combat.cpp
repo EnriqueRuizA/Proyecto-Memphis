@@ -4,6 +4,7 @@
 #include "ui.h"
 #include "audio.h"
 #include "fx.h"
+#include "atmos.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -39,6 +40,7 @@ void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
                         const char* scenarioName){
     g_battle={};
     fxClear();
+    atmosReset();
     g_battle.terrain=terrain;
     g_battle.battleProvince=provinceIdx;
     g_battle.isDefense=isDefense;

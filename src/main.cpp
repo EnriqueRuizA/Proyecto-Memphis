@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "audio.h"
 #include "fx.h"
+#include "atmos.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -74,7 +75,9 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         drawBattlefield();
         drawAllUnits();
         fxDraw();
+        atmosDrawWorld();
         endBattleView();
+        atmosDrawScreen(SCREEN_W,SCREEN_H);
         drawBattleHUD(mouse);
         // Overlay
         DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,160});
@@ -306,6 +309,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         separateSoldiers(g_battle.enemyUnits);
         fxUpdate(eff);
         fxBattleDust(eff);
+        atmosUpdate(eff);
 
         // Update projectiles
         for(auto& p:g_battle.projs){
@@ -386,7 +390,9 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     }
     drawAllUnits();
     fxDraw();
+    atmosDrawWorld();
     endBattleView();
+    atmosDrawScreen(SCREEN_W,SCREEN_H);
 
     drawBattleHUD(mouse);
 
@@ -2110,6 +2116,7 @@ int main(){
     SetExitKey(KEY_NULL);
     if(g_settings.fullscreen && !IsWindowFullscreen()) ToggleFullscreen();
     initAudio();
+    atmosInit();
 
     srand((unsigned)time(nullptr)); // 1.2: seed for any remaining rand() calls
     g_battleLog.clear();
@@ -2224,6 +2231,7 @@ int main(){
     if(g_campaign.turn>1) saveGame();
 
     shutdownAudio();
+    atmosShutdown();
     CloseWindow();
     return 0;
 }
