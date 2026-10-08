@@ -228,29 +228,104 @@ bool losClean(Vector2 from,Vector2 to,const std::vector<Soldier>& friendlies,int
 // ═══════════════════════════════════════════════════════════════════════════
 //  BATTLE UPDATE
 // ═══════════════════════════════════════════════════════════════════════════
+// Rejilla espacial de baldosas (Fase A) para vecindad en O(1) por soldado.
+// Baldosas + membresia incremental: al empujar un par, si un soldado cruza
+// de celda se recoloca al momento (swap-with-last), asi que el membership
+// NUNCA queda obsoleto dentro de una pasada — con CSR estatico los pares
+// formados por empujadas se escapaban al query (same caia a 17.6px en
+// mega-clash). cellSize >= minD garantiza vecinos <minD en celdas 3x3.
+// Los queries iteran una COPIA (scratch) de las 9 baldosas para poder
+// empujar+recolocar sin invalidar el iterador.
+struct SepGrid {
+    int gw=0,gh=0;
+    float cell=26.f,invCell=1.f/26.f;
+    std::vector<std::vector<int>> buckets; // indices de items por celda
+    std::vector<int> slotOf;               // posicion dentro de su bucket
+    std::vector<int> cellItem;             // celda actual de cada item
+    std::vector<int> scratch;              // copia 3x3 para iterar seguro
+    void build(const std::vector<Soldier*>& all,float cellSize){
+        cell=cellSize; invCell=1.f/cellSize;
+        gw=(int)((float)BATTLE_W/cellSize)+2;
+        gh=(int)((float)BATTLE_H/cellSize)+2;
+        buckets.assign((size_t)gw*gh,{});
+        slotOf.resize(all.size());
+        cellItem.resize(all.size());
+        for(size_t i=0;i<all.size();i++){
+            int c=cellOf(all[i]->pos);
+            cellItem[i]=c;
+            slotOf[i]=(int)buckets[c].size();
+            buckets[c].push_back((int)i);
+        }
+    }
+    inline int cx(float x)const{int c=(int)(x*invCell);return c<0?0:(c>=gw?gw-1:c);}
+    inline int cy(float y)const{int c=(int)(y*invCell);return c<0?0:(c>=gh?gh-1:c);}
+    inline int cellOf(Vector2 p)const{return cy(p.y)*gw+cx(p.x);}
+    // Recoloca el item i si su soldado cruzo de celda (llamar tras empujar)
+    inline void touch(int i,Soldier* s){
+        int c1=cellOf(s->pos);
+        if(c1==cellItem[i]) return;
+        int c0=cellItem[i];
+        auto& b0=buckets[c0];
+        int slot=slotOf[i];
+        int last=b0.back();
+        b0[slot]=last; slotOf[last]=slot; b0.pop_back();
+        auto& b1=buckets[c1];
+        slotOf[i]=(int)b1.size();
+        b1.push_back(i);
+        cellItem[i]=c1;
+    }
+    // Copia a scratch los items de las 9 baldosas alrededor de (ccx,ccy)
+    inline void collect(int ccx,int ccy){
+        scratch.clear();
+        for(int gy=ccy-1;gy<=ccy+1;gy++){
+            if(gy<0||gy>=gh) continue;
+            for(int gx2=ccx-1;gx2<=ccx+1;gx2++){
+                if(gx2<0||gx2>=gw) continue;
+                const auto& b=buckets[gy*gw+gx2];
+                scratch.insert(scratch.end(),b.begin(),b.end());
+            }
+        }
+    }
+};
+static SepGrid g_sepGrid;
+
 bool separateSoldiers(std::vector<BattleUnit>& units){
     // Separation between ALL friendly soldiers, crossing groups (v9: antes
     // solo separaba dentro de cada grupo, asi que soldados de grupos
     // distintos del mismo bando podian fundirse en un mismo punto).
     // minD = espaciado de formacion del jugador (Settings -> formationSpacing).
-    // V10: 4 pasadas con push 0.8 hasta converger (una sola pasada dejaba
-    // cadenas de vecindad a ~17px en el cuerpo a cuerpo).
+    // V10: 4 pasadas con push 0.8 hasta converger; Fase A: vecindad via
+    // rejilla espacial (antes O(n^2) completo: 88ms a 1920 soldados).
+    // Fase A.2: hasta 8 pasadas — con ejercitos multi-grupo densos (16x60)
+    // 4 dejaban pares a 19.5px; el early-break hace gratis lo que no necesita.
     float minD=g_settings.formationSpacing;
     std::vector<Soldier*> all;
     for(auto& bu:units)
         for(auto& s:bu.soldiers)
             if(s.alive) all.push_back(&s);
+    if(all.empty()) return false;
     bool any=false;
-    for(int pass=0;pass<4;pass++){
+    const float minD2=minD*minD;
+    for(int pass=0;pass<8;pass++){
+        g_sepGrid.build(all,minD); // cell=minD: vecinos <minD siempre en 3x3
         bool moved=false;
         for(int i=0;i<(int)all.size();i++){
-            for(int j=i+1;j<(int)all.size();j++){
-                float d=vdist(all[i]->pos,all[j]->pos);
-                if(d<minD&&d>0.001f){
+            Soldier* a=all[i];
+            g_sepGrid.collect(g_sepGrid.cx(a->pos.x),g_sepGrid.cy(a->pos.y));
+            for(int k=0;k<(int)g_sepGrid.scratch.size();k++){
+                int j=g_sepGrid.scratch[k];
+                if(j<=i) continue; // par unico (i<j)
+                Soldier* b=all[j];
+                float dx=b->pos.x-a->pos.x, dy=b->pos.y-a->pos.y;
+                float d2=dx*dx+dy*dy;
+                if(d2<minD2&&d2>1e-6f){
+                    float d=sqrtf(d2);
                     float push=(minD-d)*0.8f;
-                    Vector2 dir2=vnorm(v2sub(all[j]->pos,all[i]->pos));
-                    all[i]->pos=v2sub(all[i]->pos,v2scale(dir2,push));
-                    all[j]->pos=v2add(all[j]->pos,v2scale(dir2,push));
+                    float nx=dx/d*push, ny=dy/d*push;
+                    a->pos.x-=nx; a->pos.y-=ny;
+                    b->pos.x+=nx; b->pos.y+=ny;
+                    g_sepGrid.touch(i,a);
+                    g_sepGrid.touch(j,b);
                     moved=true; any=true;
                 }
             }
@@ -267,27 +342,40 @@ bool separateSoldiers(std::vector<BattleUnit>& units){
 bool separateContact(std::vector<BattleUnit>& a,std::vector<BattleUnit>& b){
     // Contacto entre bandos: distancia menor para que las lineas se toquen
     // sin fundirse (antes no habia ninguna: los cuerpos podian apilarse).
-    float minD=14.f;
+    // Fase A: rejilla combinada (ambos bandos), pares solo a->b.
+    const float minD=14.f;
+    const float minD2=minD*minD;
+    static std::vector<Soldier*> all;
+    static std::vector<char> team; // 0=a 1=b
+    all.clear(); team.clear();
+    for(auto& bu:a) for(auto& s:bu.soldiers) if(s.alive){ all.push_back(&s); team.push_back(0); }
+    for(auto& bu:b) for(auto& s:bu.soldiers) if(s.alive){ all.push_back(&s); team.push_back(1); }
+    if(all.empty()) return false;
     bool any=false;
-    for(int pass=0;pass<2;pass++){
-    for(auto& buA:a){
-        for(auto& sa:buA.soldiers){
-            if(!sa.alive) continue;
-            for(auto& buB:b){
-                for(auto& sb:buB.soldiers){
-                    if(!sb.alive) continue;
-                    float d=vdist(sa.pos,sb.pos);
-                    if(d<minD&&d>0.001f){
-                        float push=(minD-d)*0.8f;
-                        Vector2 dir2=vnorm(v2sub(sb.pos,sa.pos));
-                        sa.pos=v2sub(sa.pos,v2scale(dir2,push));
-                        sb.pos=v2add(sb.pos,v2scale(dir2,push));
-                        any=true;
-                    }
+    for(int pass=0;pass<4;pass++){ // Fase A.2: 4 pasadas (era 2) para cierres multi-grupo
+        g_sepGrid.build(all,minD);
+        for(int i=0;i<(int)all.size();i++){
+            if(team[i]) continue; // solo fuente a (cada par a-b una vez)
+            Soldier* sa=all[i];
+            g_sepGrid.collect(g_sepGrid.cx(sa->pos.x),g_sepGrid.cy(sa->pos.y));
+            for(int k=0;k<(int)g_sepGrid.scratch.size();k++){
+                int j=g_sepGrid.scratch[k];
+                if(!team[j]) continue; // solo b
+                Soldier* sb=all[j];
+                float dx=sb->pos.x-sa->pos.x, dy=sb->pos.y-sa->pos.y;
+                float d2=dx*dx+dy*dy;
+                if(d2<minD2&&d2>1e-6f){
+                    float d=sqrtf(d2);
+                    float push=(minD-d)*0.8f;
+                    float nx=dx/d*push, ny=dy/d*push;
+                    sa->pos.x-=nx; sa->pos.y-=ny;
+                    sb->pos.x+=nx; sb->pos.y+=ny;
+                    g_sepGrid.touch(i,sa);
+                    g_sepGrid.touch(j,sb);
+                    any=true;
                 }
             }
         }
-    }
     }
     return any;
 }
@@ -296,7 +384,8 @@ void separateAll(){
     // Proyecciones alternadas: mismo-bando (26) y cruzado (14) se perturban
     // mutuamente; alternar hasta que ninguno tenga violaciones alcanza un
     // estado factible con ambas restricciones satisfechas.
-    for(int k=0;k<12;k++){
+    // Fase A.2: 16 ciclos (era 12) — ejercitos densos necesitan mas alternancias.
+    for(int k=0;k<16;k++){
         bool m=separateSoldiers(g_battle.playerUnits);
         m=separateSoldiers(g_battle.enemyUnits)||m;
         m=separateContact(g_battle.playerUnits,g_battle.enemyUnits)||m;
@@ -312,7 +401,7 @@ static void paintTeam(std::vector<BattleUnit>& us,Color c){
     for(auto& bu:us){
         for(auto& s:bu.soldiers){
             if(!s.alive) continue;
-            DrawCircleV(s.pos,3,c);
+            DrawCircleSector(s.pos,3.f,0.f,360.f,8,c); // F12: 8 segs, no 360
             float rad=s.angle*DEG2RAD;
             Vector2 tip={s.pos.x+cosf(rad)*14.f,s.pos.y-sinf(rad)*14.f};
             DrawLineEx(s.pos,tip,2.f,c);
@@ -918,8 +1007,27 @@ void drawAllUnits(){
     static float s_animClock=0.f;
     s_animClock+=GetFrameTime()*(g_battle.paused?0.f:g_battle.timeScale);
 
+    // AABB de la vista en mundo (4 esquinas; la camara tiene rotacion iso,
+    // asi que el AABB del rect rotado cubre siempre la pantalla completa).
+    // Fase A: culling de soldados/cadaveres fuera de pantalla.
+    float vx0=1e9f,vy0=1e9f,vx1=-1e9f,vy1=-1e9f;
+    {
+        const Vector2 corners[4]={{0.f,0.f},{(float)SCREEN_W,0.f},
+                                  {0.f,(float)SCREEN_H},{(float)SCREEN_W,(float)SCREEN_H}};
+        for(const Vector2& sc:corners){
+            Vector2 w=screenToWorldBattle(sc);
+            if(w.x<vx0)vx0=w.x;
+            if(w.x>vx1)vx1=w.x;
+            if(w.y<vy0)vy0=w.y;
+            if(w.y>vy1)vy1=w.y;
+        }
+        const float PAD=48.f;
+        vx0-=PAD; vy0-=PAD; vx1+=PAD; vy1+=PAD;
+    }
+
     // Dead markers
     for(auto& d:g_battle.dead){
+        if(d.pos.x<vx0||d.pos.x>vx1||d.pos.y<vy0||d.pos.y>vy1) continue;
         // Hoja iso de muerte (Fase 2); si no, el blob generico
         if(drawUnitDeath(d.typeIdx,d.team,d.pos,d.angle,0.65f,8.f-d.timer,d.alpha))
             continue;
@@ -969,12 +1077,15 @@ void drawAllUnits(){
         const UnitTypeDef& td=g_unitTypes[bu.typeIdx];
         int alive=0; for(auto& s:bu.soldiers) if(s.alive) alive++;
         if(alive==0) continue;
+        bool anyVis=false;
         // Group bounding circle
         DrawCircleLines((int)bu.anchorPos.x,(int)bu.anchorPos.y,
                         (int)(soldierMeleeRadius(td)*(float)alive*0.4f+20.f),
                         {180,40,40,40});
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
+            if(sol.pos.x<vx0||sol.pos.x>vx1||sol.pos.y<vy0||sol.pos.y>vy1) continue;
+            anyVis=true;
             int anim=SS_MOVING_SLOT==sol.state||SS_MOVING_TARGET==sol.state||
                      SS_FLEEING==sol.state?UA_WALK:
                      (sol.state==SS_ATTACKING_MELEE||sol.state==SS_ATTACKING_RANGED)?
@@ -991,10 +1102,12 @@ void drawAllUnits(){
             }
         }
         // Morale bar
+        if(anyVis){
         float mr=bu.morale/100.f;
         DrawRectangle((int)(bu.anchorPos.x-30),(int)(bu.anchorPos.y-28),60,5,DARKGRAY);
         DrawRectangle((int)(bu.anchorPos.x-30),(int)(bu.anchorPos.y-28),(int)(60*mr),5,
                       mr>0.5f?Color{255,161,0,255}:mr>0.2f?Color{253,249,0,255}:Color{230,41,55,255});
+        }
     }
 
     // Draw player units
@@ -1016,6 +1129,7 @@ void drawAllUnits(){
         }
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
+            if(sol.pos.x<vx0||sol.pos.x>vx1||sol.pos.y<vy0||sol.pos.y>vy1) continue;
             int anim=SS_MOVING_SLOT==sol.state||SS_MOVING_TARGET==sol.state||
                      SS_FLEEING==sol.state?UA_WALK:
                      (sol.state==SS_ATTACKING_MELEE||sol.state==SS_ATTACKING_RANGED)?

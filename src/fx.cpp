@@ -104,6 +104,7 @@ void fxDraw(){
         int a = (int)((float)p.a0 * t);
         if(a <= 0) continue;
         float sz = p.size1 + (p.size0 - p.size1) * t;
-        DrawCircleV(p.pos, sz, Color{p.r, p.g, p.b, (unsigned char)a});
+        // 8 segmentos: particulas pequenas, DrawCircleV (360) era caro con cientos activas
+        DrawCircleSector(p.pos, sz, 0.f, 360.f, 8, Color{p.r, p.g, p.b, (unsigned char)a});
     }
 }

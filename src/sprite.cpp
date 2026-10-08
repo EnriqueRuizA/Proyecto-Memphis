@@ -388,7 +388,8 @@ void drawUnit(int typeIdx,int team,Vector2 pos,float angleDeg,float scale,
         if(frame<0) frame+=cols;
         Color tint=bright?WHITE:Color{210,210,210,255};
         Rectangle dst; isoDst(td,pos,scale,dst);
-        if(shadow) DrawCircleV({pos.x+2,pos.y+2},(int)(dst.height*0.13f),Color{0,0,0,55});
+        // Sombra: 12 segmentos en vez de DrawCircleV (360 segs = ~700k verts/frame a 1920 soldados)
+        if(shadow) DrawCircleSector({pos.x+2,pos.y+2},(int)(dst.height*0.13f),0.f,360.f,12,Color{0,0,0,55});
         Rectangle src={(float)(frame*ISO_CELL_W),(float)(dir*ISO_CELL_H),
                        (float)ISO_CELL_W,(float)ISO_CELL_H};
         DrawTexturePro(s_iso[team?1:0][rec][anim],src,dst,{0,0},0.f,tint);

@@ -12,6 +12,7 @@
 #include "campaign.h"
 #include "city.h"
 #include "save.h"
+#include "prof.h"
 #include <vector>
 #include <string>
 #include <deque>
@@ -98,6 +99,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     }
 
     // ── CONTROL GROUPS ────────────────────────────────────────────────────────
+    double t0=GetTime(); double t1=t0; // profiler: input / update
     // Ctrl+1..9  →  save currently selected units as group N (preserves relative positions)
     // 1..9       →  select group N and mark it as active (move orders will keep formation)
     {
@@ -304,10 +306,13 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         }
 
         // Update
+        profAdd(PROF_INPUT,(GetTime()-t0)*1000.0); t1=GetTime();
         updateEnemyAI(eff);
         updateBattleUnits(g_battle.playerUnits,g_battle.enemyUnits,eff);
         updateBattleUnits(g_battle.enemyUnits,g_battle.playerUnits,eff);
+        double tSep=GetTime();
         separateAll();
+        profAdd(PROF_SEP,(GetTime()-tSep)*1000.0);
         fxUpdate(eff);
         fxBattleDust(eff);
         atmosUpdate(eff);
@@ -362,6 +367,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         int pa=0,ea=0;
         for(auto& bu:g_battle.playerUnits) for(auto& s:bu.soldiers) if(s.alive) pa++;
         for(auto& bu:g_battle.enemyUnits) for(auto& s:bu.soldiers) if(s.alive) ea++;
+        g_profSoldiers=pa+ea;
         if(pa==0){g_battle.battleOver=true;g_battle.playerWon=false;
             battleLogAdd("DEFEAT — all forces destroyed!");}
         if(ea==0&&pa>0){g_battle.battleOver=true;g_battle.playerWon=true;
@@ -382,7 +388,12 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     }
 
     // DRAW
+    profAdd(PROF_UPDATE,(GetTime()-t1)*1000.0); double t2=GetTime();
     beginBattleView();
+    double tT=GetTime();
+    drawBattlefield();
+    profAdd(PROF_TERRAIN,(GetTime()-tT)*1000.0);
+    double tU=GetTime();
     drawBattlefield();
     // Selection rect in world space
     if(g_battle.dragging&&(g_battle.selRect.width>8||g_battle.selRect.height>8)){
@@ -394,9 +405,11 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     drawSoldierDebug();
     atmosDrawWorld();
     endBattleView();
+    profAdd(PROF_UNITS,(GetTime()-tU)*1000.0);
     atmosDrawScreen(SCREEN_W,SCREEN_H);
 
     drawBattleHUD(mouse);
+    profAdd(PROF_DRAW,(GetTime()-t2)*1000.0);
 
     // Game over overlay
     if(g_battle.battleOver){
@@ -1847,9 +1860,10 @@ GameState updateDrawQuickBattleSetup(Vector2 mouse){
     float btnY=barY+(barH-btnH)*0.5f;
     if(drawButton({(float)(SCREEN_W-uiPx(420.f)),btnY,uiPx(280.f),btnH},"START BATTLE",mouse,cn,ch)&&canStart){
         std::vector<std::pair<int,int>> pGroups,eGroups;
+        // Un batallon por regimiento marcado en la UI (antes spawneaba solo 1 por tipo)
         for(int i=0;i<n;i++){
-            if(g_quickSetup.playerCounts[i]>0) pGroups.push_back({i,g_unitTypes[i].soldierCount});
-            if(g_quickSetup.enemyCounts[i]>0) eGroups.push_back({i,g_unitTypes[i].soldierCount});
+            for(int r=0;r<g_quickSetup.playerCounts[i];r++) pGroups.push_back({i,g_unitTypes[i].soldierCount});
+            for(int r=0;r<g_quickSetup.enemyCounts[i];r++) eGroups.push_back({i,g_unitTypes[i].soldierCount});
         }
         initBattle(pGroups,eGroups,TERRAIN_PLAIN,-1,false,"Quick Battle");
         g_quickBattle=true;
@@ -2026,7 +2040,13 @@ GameState updateDrawMainMenu(Vector2 mouse){
     if(drawButton({bx,menuTop+step*4.f,bw,bh},"QUICK BATTLE",mouse)){
         g_quickSetup.playerCounts.assign(unitTypeCount(),0);
         g_quickSetup.enemyCounts.assign(unitTypeCount(),0);
-        if(unitTypeCount()>0){ g_quickSetup.playerCounts[0]=2; g_quickSetup.enemyCounts[0]=2; }
+        if(unitTypeCount()>0){
+            // Perf stress: QB_STRESS=N regimientos por bando (medicion de rendimiento)
+            int def=2;
+            if(const char* e=getenv("QB_STRESS")){ int v=atoi(e); if(v>0) def=std::min(v,16); }
+            g_quickSetup.playerCounts[0]=def;
+            g_quickSetup.enemyCounts[0]=def;
+        }
         return STATE_QUICK_BATTLE_SETUP;
     }
     if(drawButton({bx,menuTop+step*5.f,bw,bh},"UNIT EDITOR",mouse)){
@@ -2156,6 +2176,7 @@ int main(){
         // Fullscreen toggle
         if(IsKeyPressed(KEY_F11)||(IsKeyDown(KEY_LEFT_ALT)&&IsKeyPressed(KEY_ENTER)))
             ToggleFullscreen();
+        if(IsKeyPressed(KEY_F10)) g_profOverlay=!g_profOverlay;
 
         SCREEN_W=GetScreenWidth();
         SCREEN_H=GetScreenHeight();
@@ -2168,14 +2189,18 @@ int main(){
         Vector2 mouse=GetMousePosition();
         updateAudio(dt);
 
+        profFrameBegin();
+        double tFrame=GetTime();
         BeginDrawing();
         switch(g_state){
             case STATE_MAIN_MENU:
                 g_state=updateDrawMainMenu(mouse);
                 break;
-            case STATE_CAMPAIGN_MAP:
+            case STATE_CAMPAIGN_MAP:{
+                double tMap=GetTime();
                 g_state=updateDrawCampaignMap(mouse,dt);
-                break;
+                profAdd(PROF_MAP,(GetTime()-tMap)*1000.0);
+            }   break;
             case STATE_CITY_MANAGEMENT:
                 g_state=updateDrawCityManagement(mouse);
                 break;
@@ -2215,6 +2240,7 @@ int main(){
         }
         // 4.9: Global FPS (shown in non-battle states too)
         if(g_settings.showFPS&&g_state!=STATE_BATTLE) DrawFPS(8,8);
+        if(g_profOverlay) profDrawOverlay();
 
         // 4.10: Custom medieval cursor (cross-hair style)
         HideCursor();
@@ -2228,6 +2254,8 @@ int main(){
         DrawRectangleLines((int)cur.x-2,(int)cur.y-2,4,4,{curCol.r,curCol.g,curCol.b,180});
 
         EndDrawing();
+        profAdd(PROF_FRAME,(GetTime()-tFrame)*1000.0);
+        profFrameEnd();
 
         // 4.10: Custom medieval cursor drawn after EndDrawing is handled by Raylib's software cursor
     }

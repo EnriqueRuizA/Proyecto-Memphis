@@ -114,7 +114,8 @@ void atmosDrawWorld(){
         float fade = t < 0.5f ? t*2.f : (1.f-t)*2.f; // entra/sale suave
         int a = (int)(m.a0 * fade);
         if(a <= 0) continue;
-        DrawCircleV(m.pos, m.size, Color{236,226,192,(unsigned char)a});
+        // 8 segmentos (DrawCircleV = 360 segs, innecesario para motas)
+        DrawCircleSector(m.pos, m.size, 0.f, 360.f, 8, Color{236,226,192,(unsigned char)a});
     }
 }
 
