@@ -42,8 +42,6 @@ QuickBattleSetup g_quickSetup;
 //  UNIT EDITOR STATE (sandbox)
 // ───────────────────────────────────────────────────────────────────────────
 int       g_editTypeIdx = 0;
-bool      g_editorPreviewDirty = true;
-Texture2D g_editorPreviewTex = {0};
 float     g_editorPreviewAngle = 0.f;
 float     g_editorListScrollY = 0.f;   // scroll for left-panel unit list
 float     g_editorRightScrollY = 0.f; // scroll for right-panel stats
@@ -70,10 +68,10 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     // Pause overlay
     if(g_battle.paused){
         // Still draw world
-        BeginMode2D(g_battle.cam);
+        beginBattleView();
         drawBattlefield();
         drawAllUnits();
-        EndMode2D();
+        endBattleView();
         drawBattleHUD(mouse);
         // Overlay
         DrawRectangle(0,0,SCREEN_W,SCREEN_H,{0,0,0,160});
@@ -147,7 +145,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         bool overHud=(mouse.y>SCREEN_H-HUD_H||mouse.y<TOPBAR_H);
         if(!overHud){
             // Convert mouse to world coords
-            Vector2 worldMouse=GetScreenToWorld2D(mouse,g_battle.cam);
+            Vector2 worldMouse=screenToWorldBattle(mouse);
 
             if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
                 g_battle.selStart=worldMouse;
@@ -362,7 +360,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
     }
 
     // DRAW
-    BeginMode2D(g_battle.cam);
+    beginBattleView();
     drawBattlefield();
     // Selection rect in world space
     if(g_battle.dragging&&(g_battle.selRect.width>8||g_battle.selRect.height>8)){
@@ -370,7 +368,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         DrawRectangleLinesEx(g_battle.selRect,1,C_ALLY);
     }
     drawAllUnits();
-    EndMode2D();
+    endBattleView();
 
     drawBattleHUD(mouse);
 
@@ -1172,8 +1170,7 @@ GameState updateDrawUnitCodex(Vector2 mouse,float dt){
 
         // Sprite
         Vector2 sprCenter={(float)(SCREEN_W-100),(float)140};
-        drawSoldierSprite(g_playerTextures[g_codexIdx],sprCenter,g_codexAngle,2.5f,
-                          {td.r,td.g,td.b,255},false);
+        drawUnit(g_codexIdx,0,sprCenter,g_codexAngle,2.5f,true,false);
         DrawCircleLines((int)sprCenter.x,(int)sprCenter.y,55,{80,70,50,80});
 
         // Lore — word wrapped (3.8)
@@ -1397,22 +1394,6 @@ GameState updateDrawSettings(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  STATE: UNIT EDITOR (sandbox, from main menu)
 // ═══════════════════════════════════════════════════════════════════════════
-Texture2D g_editorPrevTex={0};
-void rebuildEditorPreview(){
-    if(g_editorPrevTex.id>0) UnloadTexture(g_editorPrevTex);
-    g_editorPrevTex={0};
-    if(g_editTypeIdx>=0&&g_editTypeIdx<unitTypeCount()){
-        const UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
-        Image img;
-        switch(td.spriteBase){
-            case SPR_CAVALRY: img=makeCavalrySprite(td.r,td.g,td.b); break;
-            case SPR_RANGED:  img=makeRangedSprite(td.r,td.g,td.b,td.missileReload>2.5f); break;
-            default:          img=makeInfantrySprite(td.r,td.g,td.b,td.weaponHint); break;
-        }
-        g_editorPrevTex=imageToTex(img);
-    }
-}
-
 void loadEditorEditCopy(){
     if(g_editTypeIdx<0||g_editTypeIdx>=unitTypeCount()) return;
     g_editorEditCopy=g_unitTypes[g_editTypeIdx];
@@ -1537,7 +1518,6 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
     float backBtnY=titleY+(topBarH-titleY-btnH)*0.5f;
     if(drawSmBtn({(float)(SCREEN_W-btnW-uiPx(14.f)),backBtnY,btnW,btnH},"BACK",mouse,
                   {50,25,25,255},{80,40,40,255})){
-        if(g_editorPrevTex.id>0){UnloadTexture(g_editorPrevTex);g_editorPrevTex={0};}
         return STATE_MAIN_MENU;
     }
 
@@ -1548,7 +1528,7 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
 
     static int s_editorLastTypeIdx = -1;
     if(g_editTypeIdx>=0&&g_editTypeIdx<unitTypeCount()){
-        if(g_editTypeIdx!=s_editorLastTypeIdx||!g_editorEditCopyValid){ loadEditorEditCopy(); s_editorLastTypeIdx=g_editTypeIdx; g_editorPreviewDirty=true; }
+        if(g_editTypeIdx!=s_editorLastTypeIdx||!g_editorEditCopyValid){ loadEditorEditCopy(); s_editorLastTypeIdx=g_editTypeIdx; }
     } else s_editorLastTypeIdx=-1;
 
     // ─── New unit name dialog (modal): wide input, cursor
@@ -1580,7 +1560,6 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
                 g_editTypeIdx=(int)g_unitTypes.size()-1;
                 rebuildTexture(g_editTypeIdx);
                 loadEditorEditCopy();
-                g_editorPreviewDirty=true;
             }
             g_editorNewUnitDialogOpen=false; g_editorNewUnitNameBuf.clear();
         }
@@ -1607,7 +1586,7 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         DrawRectangleLinesEx(rowR,1,sel?C_GOLD:Color{40,68,45,255});
         DrawRectangle((int)(rowR.x+uiPx(4.f)),(int)(rowR.y+uiPx(4.f)),(int)uiPx(12.f),(int)uiPx(12.f),{g_unitTypes[i].r,g_unitTypes[i].g,g_unitTypes[i].b,255});
         DrawText(g_unitTypes[i].name,(int)(rowR.x+uiPx(22.f)),(int)(rowR.y+uiPx(6.f)),12,sel?C_GOLD:WHITE);
-        if(hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){ g_editTypeIdx=i; loadEditorEditCopy(); g_editorPreviewDirty=true; }
+        if(hv&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){ g_editTypeIdx=i; loadEditorEditCopy(); }
         ly+=listRowH;
     }
     ly+=uiPx(12.f);
@@ -1631,7 +1610,6 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
 
     // ─── Right panel: sprite + stats (scissored and scrollable); buttons at screen bottom-right
     if(g_editTypeIdx>=0&&g_editTypeIdx<unitTypeCount()&&g_editorEditCopyValid){
-        if(g_editorPreviewDirty){ rebuildEditorPreview(); g_editorPreviewDirty=false; }
         UnitTypeDef& td=g_unitTypes[g_editTypeIdx];
         float rx=rightX, ry=panelY, pad=uiPx(10.f);
         float labelW=uiPx(140.f), boxW=uiPx(90.f), rowH=uiPx(24.f);
@@ -1652,9 +1630,9 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         DrawText(g_editorEditCopy.name,(int)(rx+pad),(int)rightDrawY(ry+pad),16,SKYBLUE);
         DrawLine((int)rx,(int)rightDrawY(ry+uiPx(32.f)),(int)(rx+rightContentW),(int)rightDrawY(ry+uiPx(32.f)),{50,50,110,80});
 
-        if(g_editorPrevTex.id>0){
+        if(g_editTypeIdx>=0&&g_editTypeIdx<unitTypeCount()){
             Vector2 center={rx+rightContentW/2.f, rightDrawY(ry+uiPx(120.f))};
-            drawSoldierSprite(g_editorPrevTex,center,g_editorPreviewAngle,3.f,{g_editorEditCopy.r,g_editorEditCopy.g,g_editorEditCopy.b,255},false);
+            drawUnit(g_editTypeIdx,0,center,g_editorPreviewAngle,3.f,true,false);
             DrawCircleLines((int)center.x,(int)center.y,(int)uiPx(60.f),{100,100,200,60});
         }
 
@@ -1710,7 +1688,6 @@ GameState updateDrawUnitEditor(Vector2 mouse,float dt){
         if(g_editorEditCopy.isBuiltin&&vanIdx>=0&&drawSmBtn({defaultX,btnY,defaultW,uiPx(30.f)},"Default",mouse,{30,40,50,255},{50,60,90,255})){
             g_editorEditCopy=g_vanillaUnitTypes[vanIdx];
             g_editorEditCopy.name[sizeof(g_editorEditCopy.name)-1]='\0';
-            g_editorPreviewDirty=true;
         }
     }
 
@@ -2004,8 +1981,6 @@ GameState updateDrawMainMenu(Vector2 mouse){
         return STATE_QUICK_BATTLE_SETUP;
     }
     if(drawButton({bx,menuTop+step*5.f,bw,bh},"UNIT EDITOR",mouse)){
-        g_editorPreviewDirty=true;
-        rebuildEditorPreview();
         return STATE_UNIT_EDITOR;
     }
     if(drawButton({bx,menuTop+step*6.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
@@ -2108,7 +2083,6 @@ int main(){
     g_battleLog.clear();
 
     initBuiltinTypes();
-    rebuildEditorPreview();
 
     // Check for any campaign save
     g_hasSave=false;
@@ -2211,7 +2185,7 @@ int main(){
     // Cleanup textures
     for(auto& t:g_playerTextures) UnloadTexture(t);
     for(auto& t:g_enemyTextures) UnloadTexture(t);
-    if(g_editorPrevTex.id>0) UnloadTexture(g_editorPrevTex);
+    unloadUnitSheets();
 
     // Auto-save on exit if campaign active
     if(g_campaign.turn>1) saveGame();

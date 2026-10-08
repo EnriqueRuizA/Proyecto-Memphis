@@ -59,6 +59,7 @@ void initBuiltinTypes(){
 
     g_vanillaUnitTypes = g_unitTypes;
 
+    loadUnitSheets(); // hojas Kenney (assets/sprites); si faltan → procedural
     g_playerTextures.clear();
     g_enemyTextures.clear();
     for(int i=0;i<(int)g_unitTypes.size();i++) rebuildTexture(i);

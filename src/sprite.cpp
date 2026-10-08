@@ -195,3 +195,99 @@ void rebuildTexture(int idx){
     unsigned char eb=clampU8((int)(td.b*0.2f+10));
     setOrPush(g_enemyTextures,imageToTex(makeImg(er,eg,eb)),idx);
 }
+
+// ── Hojas externas (Kenney "Medieval RTS", CC0) ─────────────────────────────
+// 5 roles x 2 equipos en assets/sprites/. La caballería va a pie (no hay
+// caballos en el pack): se distingue por tamaño extra y banderín de equipo.
+static bool      s_sheetsLoaded=false;
+static Texture2D s_sheets[2][5]; // [equipo][rol]
+
+static int sheetRoleFor(const UnitTypeDef& td){
+    if(td.spriteBase==SPR_RANGED)  return 4; // archer
+    if(td.spriteBase==SPR_CAVALRY) return 1; // jinete a pie
+    switch(td.weaponHint){
+        case 0:  return 0; // spear
+        case 1:  return 2; // axe
+        case 3:  return 3; // coronado (Dismounted Knights)
+        default: return 1; // sword
+    }
+}
+
+static void freeSheets(){
+    for(int t=0;t<2;t++)
+        for(int r=0;r<5;r++)
+            if(s_sheets[t][r].id>0){UnloadTexture(s_sheets[t][r]);s_sheets[t][r]={0};}
+    s_sheetsLoaded=false;
+}
+
+bool loadUnitSheets(){
+    if(s_sheetsLoaded) return true;
+    static const char* pref[2]={"p_","e_"};
+    static const char* role[5]={"spear","sword","axe","priest","archer"};
+    for(int t=0;t<2;t++){
+        for(int r=0;r<5;r++){
+            char path[128];
+            snprintf(path,sizeof(path),"assets/sprites/%s%s.png",pref[t],role[r]);
+            if(!FileExists(path)){
+                TraceLog(LOG_INFO,"[sprites] falta %s — fallback procedural",path);
+                freeSheets();
+                return false;
+            }
+            Texture2D tx=LoadTexture(path);
+            if(tx.id==0){
+                TraceLog(LOG_WARNING,"[sprites] error cargando %s — fallback procedural",path);
+                freeSheets();
+                return false;
+            }
+            SetTextureFilter(tx,TEXTURE_FILTER_BILINEAR);
+            s_sheets[t][r]=tx;
+        }
+    }
+    s_sheetsLoaded=true;
+    TraceLog(LOG_INFO,"[sprites] hojas Kenney cargadas desde assets/sprites/");
+    return true;
+}
+
+void     unloadUnitSheets(){ freeSheets(); }
+bool     unitSheetsActive(){ return s_sheetsLoaded; }
+
+Texture2D unitTexture(int typeIdx,int team){
+    if(s_sheetsLoaded) return s_sheets[team?1:0][sheetRoleFor(g_unitTypes[typeIdx])];
+    return team? g_enemyTextures[typeIdx] : g_playerTextures[typeIdx];
+}
+
+static void drawPennant(Vector2 pos,float s,int team){
+    float px=pos.x+s*0.17f;
+    float top=pos.y-s*0.46f, base=pos.y-s*0.18f;
+    DrawLineEx({px,top},{px,base},1.2f,{60,45,30,255});
+    float wave=sinf(g_menuTime*5.f+pos.x*0.11f)*s*0.045f;
+    Color c=team?Color{228,80,62,255}:Color{96,158,236,255};
+    Vector2 a={px,top}, b={px+s*0.26f+wave,top+s*0.07f}, d={px,top+s*0.15f};
+    DrawTriangle(a,b,d,c);
+    DrawTriangle(a,d,b,c); // garantiza visibilidad ante culling de winding
+}
+
+static void drawSheetSprite(Texture2D tex,Vector2 pos,float angleDeg,float scale,
+                            Color tint,bool shadow){
+    float s=32.f*scale;
+    if(shadow) DrawCircleV({pos.x+2,pos.y+4},(int)(s*0.3f),Color{0,0,0,50});
+    bool flip=cosf(angleDeg*DEG2RAD)<0.f;
+    Rectangle src={0,0,flip?-(float)tex.width:(float)tex.width,(float)tex.height};
+    DrawTexturePro(tex,src,{pos.x,pos.y,s,s},{s/2,s/2},0.f,tint);
+}
+
+void drawUnit(int typeIdx,int team,Vector2 pos,float angleDeg,float scale,
+              bool bright,bool shadow){
+    const UnitTypeDef& td=g_unitTypes[typeIdx];
+    if(s_sheetsLoaded){
+        float sc=scale*1.35f;                        // los lienzos son64px con margen
+        if(td.spriteBase==SPR_CAVALRY) sc*=1.18f;    // caballería: un punto mayor
+        Color tint=bright?WHITE:Color{210,210,210,255};
+        drawSheetSprite(s_sheets[team?1:0][sheetRoleFor(td)],pos,angleDeg,sc,tint,shadow);
+        if(td.spriteBase==SPR_CAVALRY) drawPennant(pos,32.f*sc,team);
+    }else{
+        Color tint=team?WHITE:(bright?WHITE:Color{td.r,td.g,td.b,255});
+        drawSoldierSprite(team?g_enemyTextures[typeIdx]:g_playerTextures[typeIdx],
+                          pos,angleDeg,scale,tint,shadow);
+    }
+}

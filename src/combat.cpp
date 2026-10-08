@@ -2,6 +2,7 @@
 #include "config.h"
 #include "util.h"
 #include "ui.h"
+#include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
 #include "campaign.h"
@@ -805,7 +806,7 @@ void drawAllUnits(){
                         {180,40,40,40});
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
-            drawSoldierSprite(g_enemyTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,WHITE,true);
+            drawUnit(bu.typeIdx,1,sol.pos,sol.angle,0.65f,true,true);
             // 3.5: HP bar only when damaged
             if(sol.hp<td.hpPerSoldier){
                 float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
@@ -840,9 +841,7 @@ void drawAllUnits(){
         }
         for(auto& sol:bu.soldiers){
             if(!sol.alive) continue;
-            Color tint={td.r,td.g,td.b,255};
-            if(bu.selected) tint=WHITE;
-            drawSoldierSprite(g_playerTextures[bu.typeIdx],sol.pos,sol.angle,0.65f,tint,true);
+            drawUnit(bu.typeIdx,0,sol.pos,sol.angle,0.65f,bu.selected,true);
             // 3.5: HP bar only when damaged
             if(sol.hp<td.hpPerSoldier){
                 float bw=8.f; float ratio=sol.hp/td.hpPerSoldier;
@@ -929,8 +928,8 @@ void drawBattleHUD(Vector2 mouse){
         // Portrait box
         DrawRectangle(8,hudY+6,58,58,{td.r,td.g,td.b,100});
         DrawRectangleLinesEx({8,(float)(hudY+6),58,58},2,C_GOLD);
-        drawSoldierSprite(g_playerTextures[sel->typeIdx],{37.f,(float)(hudY+35)},
-                          g_menuTime*30.f,1.4f,{td.r,td.g,td.b,255},false);
+        drawUnit(sel->typeIdx,0,{37.f,(float)(hudY+35)},
+                 g_menuTime*30.f,1.4f,true,false);
         // Info
         DrawText(td.name,72,hudY+8,15,C_PARCHMENT);
         // HP bar
@@ -1006,12 +1005,13 @@ void drawBattleHUD(Vector2 mouse){
         DrawRectangle(mx2-2,my2-2,4,4,C_ENEMY_COL);
     }
     // Draw viewport rect on minimap
-    float vzl=g_battle.cam.zoom;
-    float vwW=(float)SCREEN_W/(vzl*(float)BATTLE_W)*mmW;
-    float vwH=(float)(SCREEN_H-HUD_H)/(vzl*(float)BATTLE_H)*mmH;
-    float vwX=mmX+(g_battle.cam.target.x-(float)SCREEN_W*0.5f/vzl)/(float)BATTLE_W*mmW;
-    float vwY=mmY+(g_battle.cam.target.y-(float)(SCREEN_H-HUD_H)*0.5f/vzl)/(float)BATTLE_H*mmH;
-    DrawRectangleLinesEx({vwX,vwY,vwW,vwH},1,WHITE);
+    float vx,vy,vw,vh;
+    battleViewRect(vx,vy,vw,vh);
+    float vwW=vw/(float)BATTLE_W*mmW;
+    float vhR=vh/(float)BATTLE_H*mmH;
+    float vwX=mmX+vx/(float)BATTLE_W*mmW;
+    float vwY=mmY+vy/(float)BATTLE_H*mmH;
+    DrawRectangleLinesEx({vwX,vwY,vwW,vhR},1,WHITE);
 
     // 6.4: Battle log (last 5 entries, fade older ones)
     int logX=8, logY=hudY-8;

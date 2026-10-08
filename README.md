@@ -36,9 +36,12 @@ g++ -o rts_game.exe build\config.o build\util.o build\ui.o build\camera.o build\
 ## Ejecución
 
 ```bat
-rts_game.exe
-rem Las DLLs de runtime (mingw) deben estar junto al ejecutable.
+rem Desde la raíz del repositorio (assets/ y settings.ini se buscan en el CWD):
+build\rts_game_mod.exe
 ```
+
+Si `assets/sprites/` no existe, el juego arranca igualmente con los sprites
+procedurales originales (fallback automático).
 
 ## Configuración
 
@@ -49,5 +52,16 @@ rem Las DLLs de runtime (mingw) deben estar junto al ejecutable.
 ## Estructura
 
 - `src/` — 12 módulos `.cpp` + 11 headers `.h` (reestructuración FASE 1 completada).
+- `assets/sprites/` — hojas de unidades Kenney (CC0) con fallback procedural.
+- `tools/preview_sprites.cpp` — genera `build/sprite_preview.png` para verificar
+  la integración de sprites sin arrancar el juego.
 - `PLAN.md` — plan de reestructuración y estado de ejecución.
 - `settings.example.ini` — plantilla versionada de la configuración.
+
+## Créditos de arte
+
+- Unidades: **"Medieval RTS" por Kenney (kenney.nl)** — licencia
+  [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) (dominio público;
+  la atribución es opcional). Archivo de licencia incluido en
+  `assets/sprites/LICENSE-Kenney.txt`. Fuente:
+  <https://opengameart.org/content/medieval-rts-120>

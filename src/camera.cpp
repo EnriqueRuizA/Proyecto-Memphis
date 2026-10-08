@@ -43,3 +43,16 @@ void updateBattleCamera(float dt){
     g_battle.cam.zoom=g_battle.camZoom;
     g_battle.cam.offset={(float)SCREEN_W*0.5f,(float)(SCREEN_H-HUD_H+TOPBAR_H)*0.5f};
 }
+
+void beginBattleView(){ BeginMode2D(g_battle.cam); }
+void endBattleView(){ EndMode2D(); }
+
+Vector2 worldToScreenBattle(Vector2 world){ return GetWorldToScreen2D(world,g_battle.cam); }
+Vector2 screenToWorldBattle(Vector2 screen){ return GetScreenToWorld2D(screen,g_battle.cam); }
+
+void battleViewRect(float& x,float& y,float& w,float& h){
+    w=(float)SCREEN_W/g_battle.cam.zoom;
+    h=(float)(SCREEN_H-HUD_H)/g_battle.cam.zoom;
+    x=g_battle.cam.target.x-(float)SCREEN_W*0.5f/g_battle.cam.zoom;
+    y=g_battle.cam.target.y-(float)(SCREEN_H-HUD_H)*0.5f/g_battle.cam.zoom;
+}
