@@ -47,3 +47,6 @@ settings.ini
 NOTAS.txt
 PROMPT_MEJORAS_MEDIEVAL_CONQUEST.md
 PROMPT_MEJORAS_PREMIUM.md
+
+# --- Fuentes 3D descargadas (no se versionan; el bake si) ---
+assets_src/

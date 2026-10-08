@@ -1,0 +1,77 @@
+# bake_sprites - KayKit Adventurers (CC0) - frame 160x200 pitch 32 dist 5.3 yawOff 0
+# layout: X=frames (cols), Y=direcciones (8 filas, i=yaw i*45+0)
+# equipos p=jugador e=enemigo; handslot.r/l (TRS local respecto hand.*)
+# unit char wR wL
+# spear knight arrow -
+# axe barbarian axe_1handed shield_round_barbarian
+# poleaxe barbarian axe_2handed -
+# dismounted knight sword_1handed shield_square
+# bow rogue crossbow_1handed -
+# crossbow rogue crossbow_2handed -
+# mounted knight sword_1handed -
+# knights knight sword_2handed -
+# unit anim team frameW frameH cols dirs
+spear idle p 160 200 4 8
+spear walk p 160 200 8 8
+spear attack p 160 200 6 8
+spear death p 160 200 8 8
+spear idle e 160 200 4 8
+spear walk e 160 200 8 8
+spear attack e 160 200 6 8
+spear death e 160 200 8 8
+axe idle p 160 200 4 8
+axe walk p 160 200 8 8
+axe attack p 160 200 6 8
+axe death p 160 200 8 8
+axe idle e 160 200 4 8
+axe walk e 160 200 8 8
+axe attack e 160 200 6 8
+axe death e 160 200 8 8
+poleaxe idle p 160 200 4 8
+poleaxe walk p 160 200 8 8
+poleaxe attack p 160 200 6 8
+poleaxe death p 160 200 8 8
+poleaxe idle e 160 200 4 8
+poleaxe walk e 160 200 8 8
+poleaxe attack e 160 200 6 8
+poleaxe death e 160 200 8 8
+dismounted idle p 160 200 4 8
+dismounted walk p 160 200 8 8
+dismounted attack p 160 200 6 8
+dismounted death p 160 200 8 8
+dismounted idle e 160 200 4 8
+dismounted walk e 160 200 8 8
+dismounted attack e 160 200 6 8
+dismounted death e 160 200 8 8
+bow idle p 160 200 4 8
+bow walk p 160 200 8 8
+bow attack p 160 200 6 8
+bow death p 160 200 8 8
+bow idle e 160 200 4 8
+bow walk e 160 200 8 8
+bow attack e 160 200 6 8
+bow death e 160 200 8 8
+crossbow idle p 160 200 4 8
+crossbow walk p 160 200 8 8
+crossbow attack p 160 200 6 8
+crossbow death p 160 200 8 8
+crossbow idle e 160 200 4 8
+crossbow walk e 160 200 8 8
+crossbow attack e 160 200 6 8
+crossbow death e 160 200 8 8
+mounted idle p 160 200 4 8
+mounted walk p 160 200 8 8
+mounted attack p 160 200 6 8
+mounted death p 160 200 8 8
+mounted idle e 160 200 4 8
+mounted walk e 160 200 8 8
+mounted attack e 160 200 6 8
+mounted death e 160 200 8 8
+knights idle p 160 200 4 8
+knights walk p 160 200 8 8
+knights attack p 160 200 6 8
+knights death p 160 200 8 8
+knights idle e 160 200 4 8
+knights walk e 160 200 8 8
+knights attack e 160 200 6 8
+knights death e 160 200 8 8
