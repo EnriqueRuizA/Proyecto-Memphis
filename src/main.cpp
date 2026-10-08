@@ -13,6 +13,7 @@
 #include "city.h"
 #include "save.h"
 #include "prof.h"
+#include "mapart.h"
 #include <vector>
 #include <string>
 #include <deque>
@@ -686,18 +687,17 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         }
     }
 
-    // Visual map background: parchment-style gradient + subtle grid
-    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{45,42,28,255},{28,26,18,255});
-    for(int gx=0;gx<SCREEN_W;gx+=80)
-        DrawLine(gx,0,gx,SCREEN_H,{38,35,25,60});
-    for(int gy=0;gy<SCREEN_H;gy+=80)
-        DrawLine(0,gy,SCREEN_W,gy,{38,35,25,60});
+    // Fase C: mar animado de fondo (antes pergamino+grid)
+    drawCampaignSea(g_menuTime);
     static float fogX=0;
     fogX+=8.f*dt;
     for(int i=0;i<8;i++){
         float fx=fmodf(fogX+i*200.f,(float)SCREEN_W+400)-200;
-        DrawRectangle((int)fx,0,140,SCREEN_H,{25,22,15,(unsigned char)(12+i*4)});
+        DrawRectangle((int)fx,0,110,SCREEN_H,{140,170,195,(unsigned char)(4+i*2)});
     }
+
+    // Fase C: continente tipo Risk — celdas Voronoi + fronteras + costa
+    drawCampaignContinent(g_campaign.campaignId);
 
     // Roads (adjacencies) — thicker, earth tone
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
@@ -722,44 +722,31 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         if((int)g_campaign.playerProvince<32) g_campaign.explored[g_campaign.playerProvince]=true;
     }
 
-    // Terrain fill colors (more visual map)
-    static const Color terrainFill[4]={
-        {140,125,70,220},   // PLAIN — wheat/tan
-        {50,95,45,220},    // FOREST — green
-        {90,75,65,220},    // MOUNTAIN — stone
-        {55,85,110,220}    // COAST — sea blue
-    };
-    static const Color terrainBorder[4]={
-        {180,160,90,255},{70,120,60,255},{110,95,80,255},{70,110,140,255}
-    };
-
-    // Draw provinces (filled by terrain, border by faction when explored)
+    // Fase C: decor + mini-ciudad + labels sobre las celdas del continente
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
         bool explored=(i<32&&g_campaign.explored[i]);
         Color oc=factionColors[(int)p.owner];
         if(!explored) oc={40,40,40,255};
-        float rad=32.f;
-        Color fill=terrainFill[(int)p.terrain];
-        Color border=terrainBorder[(int)p.terrain];
-        if(!explored){ fill={35,35,35,220}; border={50,50,50,255}; }
-        else { fill.r=(unsigned char)((fill.r+oc.r)/2); fill.g=(unsigned char)((fill.g+oc.g)/2); fill.b=(unsigned char)((fill.b+oc.b)/2); }
-        DrawCircleV(p.center,(int)rad,fill);
-        DrawCircleLines((int)p.center.x,(int)p.center.y,(int)rad,border);
-        DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad-1),oc);
+        float rad=38.f; // radio de decor/labels (la celda la dibuja el continente)
+        if(explored) drawTerrainDecor(i,p.terrain,p.center,rad);
         if(g_selectedProvince==i){
-            float pulse=rad+4.f+sinf(g_menuTime*4.f)*4.f;
-            DrawCircleLines((int)p.center.x,(int)p.center.y,(int)pulse,C_GOLD);
+            float pulse=2.f+sinf(g_menuTime*4.f)*1.5f;
+            drawProvinceCellOutline(i,C_GOLD,2.5f+pulse);
         }
-        static const char* terrIcons[4]={"~","T","^","W"};
-        DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{240,235,200,230});
+        if(p.hasCity&&explored)
+            drawMiniCity(p.center,cityBuildLevel(p.city),p.owner,g_menuTime);
+        else if(explored){
+            static const char* terrIcons[4]={"~","T","^","W"};
+            DrawText(terrIcons[(int)p.terrain],(int)(p.center.x-5),(int)(p.center.y-8),18,{240,235,200,230});
+        }
         // Name (scale-aware spacing below circle)
         int tw=MeasureText(p.name,11);
         float nameY=p.center.y+rad+uiPx(4.f);
         DrawText(p.name,(int)(p.center.x-tw/2),(int)nameY,11,explored?C_PARCHMENT:Color{100,100,100,255});
         // Player marker (below name; hide when army is moving — icon shows position)
         if(i==g_campaign.playerProvince && !armyMoving){
-            DrawCircleLines((int)p.center.x,(int)p.center.y,(int)(rad+6),C_ALLY);
+            drawProvinceCellOutline(i,C_ALLY,3.f);
             float youY=nameY+(float)uiFS(11)+uiPx(4.f);
             DrawText("YOU",(int)(p.center.x-12),(int)youY,11,C_ALLY);
         }
@@ -792,19 +779,21 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     if(!armyMoving) drawCampaignMovementArrows();
 
     // Hover tooltip (scale-aware line spacing to avoid overlap)
+    // Guard: fuera de las barras superior/inferior (la celda puede alcanzarlas;
+    // los botones de UI se dibujan despues y deben ganar el clic)
+    float hoverTop=uiPx(46.f), hoverBot=(float)SCREEN_H-uiPx(52.f);
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
-        float rad=32.f;
+        float rad=38.f; // Fase C: offset de tooltip
         bool explored=(i<32&&g_campaign.explored[i]);
         Color oc=factionColors[(int)p.owner];
         if(!explored) oc={40,40,40,255};
-        if(vdist(mouse,p.center)<rad+6){
-            // Highlight adjacent
+        bool hov=(mouse.y>hoverTop && mouse.y<hoverBot && pointInProvinceCell(i,mouse));
+        if(hov){
+            // Highlight adjacent (borde pulsante de cada celda adyacente)
             for(int adj:p.adjacent){
                 DrawLineEx(p.center,g_campaign.provinces[adj].center,2.f,C_GOLD);
-                DrawCircleLines((int)g_campaign.provinces[adj].center.x,
-                                (int)g_campaign.provinces[adj].center.y,
-                                (int)rad+4,{C_GOLD.r,C_GOLD.g,C_GOLD.b,80});
+                drawProvinceCellOutline(adj,{C_GOLD.r,C_GOLD.g,C_GOLD.b,80},2.f);
             }
             // Tooltip — scaled box and line spacing
             float lineH1=(float)uiFS(14)+uiPx(6.f);
