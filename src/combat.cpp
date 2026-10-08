@@ -3,6 +3,7 @@
 #include "util.h"
 #include "ui.h"
 #include "audio.h"
+#include "fx.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -37,6 +38,7 @@ void initBattle(const std::vector<std::pair<int,int>>& playerGroups,
                         TerrainType terrain,int provinceIdx,bool isDefense,
                         const char* scenarioName){
     g_battle={};
+    fxClear();
     g_battle.terrain=terrain;
     g_battle.battleProvince=provinceIdx;
     g_battle.isDefense=isDefense;
@@ -503,9 +505,12 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                     }
                     tgt.hp-=dmg;
                     playSfxVar(SFX_HIT_METAL0,3,0.75f);
+                    fxSpawnSparks(tgt.pos,5);
+                    fxSpawnBlood(tgt.pos,2);
                     if(tgt.hp<=0){
                         tgt.alive=false;
                         playSfx(SFX_DEATH,0.85f);
+                        fxSpawnBlood(tgt.pos,9);
                         sol.kills++;
                         g_battle.dead.push_back({tgt.pos,1.f,8.f,
                             fTd.spriteBase==SPR_CAVALRY,tgt.angle,

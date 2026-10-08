@@ -2,6 +2,7 @@
 #include "util.h"
 #include "ui.h"
 #include "audio.h"
+#include "fx.h"
 #include "sprite.h"
 #include "terrain.h"
 #include "camera.h"
@@ -72,6 +73,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         beginBattleView();
         drawBattlefield();
         drawAllUnits();
+        fxDraw();
         endBattleView();
         drawBattleHUD(mouse);
         // Overlay
@@ -302,6 +304,8 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         updateBattleUnits(g_battle.enemyUnits,g_battle.playerUnits,eff);
         separateSoldiers(g_battle.playerUnits);
         separateSoldiers(g_battle.enemyUnits);
+        fxUpdate(eff);
+        fxBattleDust(eff);
 
         // Update projectiles
         for(auto& p:g_battle.projs){
@@ -317,9 +321,11 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                         sol.hp-=p.dmg;
                         p.alive=false;
                         playSfx(SFX_HIT_FLESH,0.7f);
+                        fxSpawnBlood(sol.pos,5);
                         if(sol.hp<=0){
                             sol.alive=false;
                             playSfx(SFX_DEATH,0.8f);
+                            fxSpawnBlood(sol.pos,9);
                             bool isCav=g_unitTypes[bu.typeIdx].spriteBase==SPR_CAVALRY;
                             g_battle.dead.push_back({sol.pos,1.f,8.f,isCav,
                                                      sol.angle,bu.typeIdx,
@@ -379,6 +385,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
         DrawRectangleLinesEx(g_battle.selRect,1,C_ALLY);
     }
     drawAllUnits();
+    fxDraw();
     endBattleView();
 
     drawBattleHUD(mouse);
