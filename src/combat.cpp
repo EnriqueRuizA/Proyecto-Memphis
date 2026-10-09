@@ -32,6 +32,112 @@ void battleLogAdd(const std::string& s){
     if((int)g_battleLog.size()>50) g_battleLog.pop_back();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  FASE D: AUTO-RESOLVE CON PREDICCIÓN (estilo RISK)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Poder de combate de un ejército: Σ cnt·(atk + def + hp·0.1)
+static float armyPower(const std::vector<std::pair<int,int>>& groups){
+    float p=0.f;
+    for(const auto& g:groups){
+        int ti=g.first, cnt=g.second;
+        if(ti<0||ti>=unitTypeCount()||cnt<=0) continue;
+        const UnitTypeDef& td=g_unitTypes[ti];
+        p+=(float)cnt*(td.meleeAttack+td.meleeDefense+td.hpPerSoldier*0.1f);
+    }
+    return p;
+}
+
+// Bonus defensivo del terreno: Montaña +25%, Bosque +15%, Costa +10%
+static float terrainDefBonus(TerrainType t){
+    if(t==TERRAIN_MOUNTAIN) return 1.25f;
+    if(t==TERRAIN_FOREST)   return 1.15f;
+    if(t==TERRAIN_COAST)    return 1.10f;
+    return 1.f;
+}
+
+// Probabilidad de victoria del jugador [0.05..0.95]
+float predictBattle(const std::vector<std::pair<int,int>>& playerGroups,
+                    const std::vector<std::pair<int,int>>& enemyGroups,
+                    TerrainType terrain,bool playerDefends,float defBonus){
+    float pw=armyPower(playerGroups);
+    float ew=armyPower(enemyGroups);
+    if(defBonus<1.f) defBonus=1.f;
+    float dm=terrainDefBonus(terrain)*defBonus;   // solo el defensor lo recibe
+    if(playerDefends) pw*=dm; else ew*=dm;
+    float total=pw+ew;
+    if(total<=0.f) return 0.5f;
+    float chance=pw/total;
+    if(chance<0.05f) chance=0.05f;
+    if(chance>0.95f) chance=0.95f;
+    return chance;
+}
+
+// Resuelve la batalla al instante y rellena g_lastResult (autoresolved=true)
+void autoResolveBattle(const std::vector<std::pair<int,int>>& playerGroups,
+                       const std::vector<std::pair<int,int>>& enemyGroups,
+                       TerrainType terrain,int provinceIdx,bool isDefense,
+                       float defBonus){
+    float pw=armyPower(playerGroups);
+    float ew=armyPower(enemyGroups);
+    if(defBonus<1.f) defBonus=1.f;
+    float dm=terrainDefBonus(terrain)*defBonus;
+    if(isDefense) pw*=dm; else ew*=dm;
+    float total=pw+ew;
+    float playerShare=total>0.f?pw/total:0.5f;
+    float chance=predictBattle(playerGroups,enemyGroups,terrain,isDefense,defBonus);
+    bool win=frandMT()<chance;
+
+    // Pérdidas: el ganador sufre menos; la intensidad sigue al bando más fuerte
+    float pFrac,eFrac;
+    if(win){
+        pFrac=0.12f+0.45f*(1.f-playerShare)+frandMT()*0.10f;
+        eFrac =0.55f+0.35f*playerShare    +frandMT()*0.15f;
+    } else {
+        pFrac=0.55f+0.35f*(1.f-playerShare)+frandMT()*0.15f;
+        eFrac =0.12f+0.45f*playerShare    +frandMT()*0.10f;
+    }
+    auto clampFrac=[](float v){ return v<0.02f?0.02f:(v>0.97f?0.97f:v); };
+    pFrac=clampFrac(pFrac); eFrac=clampFrac(eFrac);
+
+    BattleResult& r=g_lastResult;
+    r.playerWon=win;
+    r.playerLosses=0; r.enemyLosses=0;
+    r.survivors.clear();
+    int totalAlive=0;
+    for(const auto& g:playerGroups){
+        int ti=g.first, cnt=g.second;
+        if(ti<0||ti>=unitTypeCount()||cnt<=0) continue;
+        float f=clampFrac(pFrac+(frandMT()-0.5f)*0.10f);
+        int alive=cnt-(int)((float)cnt*f+0.5f);
+        if(alive<0) alive=0;
+        if(alive>cnt) alive=cnt;
+        r.playerLosses+=cnt-alive;
+        r.survivors.push_back({ti,alive});
+        totalAlive+=alive;
+    }
+    // El vencedor conserva al menos un soldado (evita ejército vacío)
+    if(win&&totalAlive<=0&&!r.survivors.empty()){
+        r.survivors.front().second=1;
+        if(r.playerLosses>0) r.playerLosses--;
+    }
+    for(const auto& g:enemyGroups){
+        int ti=g.first, cnt=g.second;
+        if(ti<0||ti>=unitTypeCount()||cnt<=0) continue;
+        float f=clampFrac(eFrac+(frandMT()-0.5f)*0.10f);
+        int dead=(int)((float)cnt*f+0.5f);
+        if(dead<0) dead=0;
+        if(dead>cnt) dead=cnt;
+        r.enemyLosses+=dead;
+    }
+    r.lootGold=(win&&!isDefense)?(50.f+frandMT()*100.f):0.f;
+    r.provinceIdx=provinceIdx;
+    r.isDefense=isDefense;
+    r.lootApplied=false;
+    r.autoresolved=true;
+    battleLogAdd(win?"[Auto] Resolved: VICTORY":"[Auto] Resolved: DEFEAT");
+}
+
 //  BATTLE INIT
 // ═══════════════════════════════════════════════════════════════════════════
 void initBattle(const std::vector<std::pair<int,int>>& playerGroups,

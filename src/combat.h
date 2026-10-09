@@ -52,6 +52,7 @@ struct BattleResult {
     int   provinceIdx;
     bool  isDefense;
     bool  lootApplied;   // 0.2: was static local, now per-result field
+    bool  autoresolved;  // Fase D: resuelto via AUTO-RESOLVE (sin simulacion)
     // Survivor counts per unit type
     std::vector<std::pair<int,int>> survivors; // {typeIdx, survivors}
 };
@@ -62,6 +63,15 @@ extern BattleResult g_lastResult;  // (:661)
 // (:757-760)
 extern std::deque<std::string> g_battleLog;
 void battleLogAdd(const std::string& s);
+
+// Fase D: predicción de batalla estilo RISK (definiciones en combat.cpp)
+float predictBattle(const std::vector<std::pair<int,int>>& playerGroups,
+                    const std::vector<std::pair<int,int>>& enemyGroups,
+                    TerrainType terrain, bool playerDefends, float defBonus);
+void autoResolveBattle(const std::vector<std::pair<int,int>>& playerGroups,
+                       const std::vector<std::pair<int,int>>& enemyGroups,
+                       TerrainType terrain, int provinceIdx, bool isDefense,
+                       float defBonus);
 
 // Funciones de combate (definiciones en combat.cpp)
 void initBattle(const std::vector<std::pair<int,int>>& playerGroups,

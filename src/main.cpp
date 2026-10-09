@@ -432,6 +432,7 @@ GameState updateDrawBattle(Vector2 mouse,float dt){
                 g_lastResult.playerLosses=0; g_lastResult.enemyLosses=0;
                 g_lastResult.survivors.clear();
                 g_lastResult.lootApplied=false; // 0.2: reset before entering result screen
+                g_lastResult.autoresolved=false; // Fase D: batalla real, no auto
                 for(auto& bu:g_battle.playerUnits){
                     int alive=0; for(auto& s:bu.soldiers) if(s.alive) alive++;
                     int dead=0;  for(auto& s:bu.soldiers) if(!s.alive) dead++;
@@ -470,6 +471,10 @@ GameState updateDrawBattleResult(Vector2 mouse){
     DrawText(ttl,SCREEN_W/2-ttw/2+3,40+3,tsz,{0,0,0,160});
     DrawText(ttl,SCREEN_W/2-ttw/2,40,tsz,tc);
     DrawLine(SCREEN_W/2-200,110,SCREEN_W/2+200,110,C_GOLD);
+    if(g_lastResult.autoresolved){
+        const char* ar="(auto-resolved)";
+        DrawText(ar,SCREEN_W/2-MeasureText(ar,14)/2,114,14,C_SECONDARY);
+    }
 
     // Stats
     DrawText(TextFormat("Enemy soldiers killed: %d",g_lastResult.enemyLosses),
@@ -622,8 +627,44 @@ GameState updateDrawPreBattle(Vector2 mouse){
     DrawText(TextFormat("Deploying: %d / 12 groups",deployCount),14,(int)(bY+22),13,C_SECONDARY);
 
     bool canStart=(deployCount>0);
+
+    // Fase D: predicción de victoria estilo RISK (según lo desplegado)
+    int piP=g_preBattle.provinceIdx;
+    bool piOk=(piP>=0&&piP<(int)g_campaign.provinces.size());
+    std::vector<std::pair<int,int>> predP, predE;
+    for(int i=0;i<(int)g_campaign.readyUnits.size();i++)
+        if(i<(int)g_preBattle.include.size()&&g_preBattle.include[i])
+            predP.push_back(g_campaign.readyUnits[i]);
+    TerrainType terP=TERRAIN_PLAIN; float defP=1.f;
+    if(piOk){
+        terP=g_campaign.provinces[piP].terrain;
+        if(g_campaign.provinces[piP].hasCity) defP=g_campaign.provinces[piP].city.defBonus;
+        if(g_preBattle.fogOfWar){
+            // Composición desconocida: proxy con tropa base + estimación de exploradores
+            int est=g_preBattle.estimatedEnemyStrength; if(est<0) est=0;
+            if(unitTypeCount()>0) predE.push_back({0,est});
+        } else predE=g_campaign.provinces[piP].army;
+    }
+    if(canStart){
+        float pch=predictBattle(predP,predE,terP,g_preBattle.isDefense,defP);
+        int pct=(int)(pch*100.f+0.5f);
+        Color pcol= pch>=0.60f?Color{90,220,90,255}:
+                   (pch>=0.40f?Color{230,200,90,255}:Color{230,90,90,255});
+        DrawText(TextFormat("Predicted victory: %d%%",pct),230,(int)(bY+22),13,pcol);
+    }
+
     Color cn=canStart?Color{30,65,30,255}:Color{30,30,30,255};
     Color ch=canStart?Color{55,120,50,255}:Color{30,30,30,255};
+    // Fase D: AUTO-RESOLVE — resuelve la batalla al instante con la misma predicción
+    if(drawButton({(float)(SCREEN_W-700),(float)(bY+6),230,46},"AUTO-RESOLVE",mouse,
+                  canStart?Color{70,55,25,255}:Color{30,30,30,255},
+                  canStart?Color{125,100,45,255}:Color{30,30,30,255})&&canStart){
+        std::vector<std::pair<int,int>> playerGroups=predP;
+        std::vector<std::pair<int,int>> enemyGroups;
+        if(piOk) enemyGroups=g_campaign.provinces[piP].army;
+        autoResolveBattle(playerGroups,enemyGroups,terP,piP,g_preBattle.isDefense,defP);
+        return STATE_BATTLE_RESULT;
+    }
     if(drawButton({(float)(SCREEN_W-450),(float)(bY+6),240,46},"START BATTLE",mouse,cn,ch)&&canStart){
         // Build player groups from selection
         std::vector<std::pair<int,int>> playerGroups, enemyGroups;
@@ -798,7 +839,13 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             // Tooltip — scaled box and line spacing
             float lineH1=(float)uiFS(14)+uiPx(6.f);
             float lineH2=(float)uiFS(12)+uiPx(4.f);
-            float twW=uiPx(240.f), twH=lineH1+lineH2*5.f+uiPx(8.f);
+            // Fase D: odds line needs tot + isAdj before sizing the box
+            int tot=0; for(auto [ti,c]:p.army) tot+=c;
+            bool isAdjHover=false;
+            for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent) if(adj==i) isAdjHover=true;
+            bool showOdds=isAdjHover&&!armyMoving&&p.owner!=FACTION_PLAYER
+                          &&!g_campaign.readyUnits.empty()&&explored;
+            float twW=uiPx(240.f), twH=lineH1+lineH2*(showOdds?6.f:5.f)+uiPx(8.f);
             float tx=mouse.x+10, ty=mouse.y-twH-8;
             if(ty<uiPx(4.f)) ty=mouse.y+rad+uiPx(8.f);
             DrawRectangle((int)(tx-4),(int)(ty-4),(int)(twW+8),(int)(twH+8),{0,0,0,200});
@@ -807,11 +854,20 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             DrawText(TextFormat("Terrain: %s",terrainNames[(int)p.terrain]),(int)tx,(int)ty,12,C_SECONDARY); ty+=lineH2;
             DrawText(TextFormat("Owner: %s",factionNames[(int)p.owner]),(int)tx,(int)ty,12,oc); ty+=lineH2;
             if(p.hasCity) DrawText(TextFormat("City: %s",p.city.name),(int)tx,(int)ty,12,C_PARCHMENT); ty+=lineH2;
-            int tot=0; for(auto [ti,c]:p.army) tot+=c;
             if(tot>0) DrawText(TextFormat("Army: ~%d soldiers",tot),(int)tx,(int)ty,12,C_ENEMY_COL); ty+=lineH2;
+            // Fase D: predicted victory if the player attacks this province
+            if(showOdds){
+                std::vector<std::pair<int,int>> tipP;
+                for(int k=0;k<(int)g_campaign.readyUnits.size()&&k<12;k++)
+                    tipP.push_back(g_campaign.readyUnits[k]);
+                float db=p.hasCity?p.city.defBonus:1.f;
+                float oc2=predictBattle(tipP,p.army,p.terrain,false,db);
+                int opct=(int)(oc2*100.f+0.5f);
+                Color opc= oc2>=0.60f?Color{90,220,90,255}:
+                          (oc2>=0.40f?Color{230,200,90,255}:Color{230,90,90,255});
+                DrawText(TextFormat("Predicted victory: %d%%",opct),(int)tx,(int)ty,12,opc); ty+=lineH2;
+            }
             // Tooltip: warn that moving here advances turn (before the click)
-            bool isAdjHover=false;
-            for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent) if(adj==i) isAdjHover=true;
             if(isAdjHover&&!armyMoving)
                 DrawText("Click to move here (advances turn)",(int)tx,(int)ty,11,{255,220,100,255});
 
