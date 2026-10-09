@@ -644,6 +644,10 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
 
         // Calculate desired movement (toward order target or auto-advance to enemies)
         Vector2 desiredAnchor=bu.anchorPos;
+        // ranged hold/retreat: anula el centroid-pull (si no, el tir de
+        // 0.1xoffset POSICIONAL por frame domina los pasos speed*dt y el
+        // ancla termina pegada al centroid enemigo en melee)
+        bool anchorHold=false;
 
         if(hasExplicitMoveOrder){
             Vector2 moveDir=vnorm(v2sub(bu.orderTarget,bu.anchorPos));
@@ -675,26 +679,46 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
                 Vector2 toEnemy=vnorm(v2sub(foeUnits[targetIdx].anchorPos,bu.anchorPos));
                 float distToEnemy=vdist(bu.anchorPos,foeUnits[targetIdx].anchorPos);
 
-                // Move toward enemy until the battle lines meet at striking
-                // distance WITHOUT interpenetrating (v9: engagement derived
-                // from both formation depths, was a fixed 70px which made the
-                // front rows overlap and the melee turn into a mosh pit).
                 int foeTi=(foeUnits[targetIdx].typeIdx>=0
                             &&foeUnits[targetIdx].typeIdx<unitTypeCount())
                            ?foeUnits[targetIdx].typeIdx:bu.typeIdx;
-                int mc=1,mr=1,fc=1,fr=1;
-                formationDims((int)bu.soldiers.size(),&mc,&mr);
-                formationDims((int)foeUnits[targetIdx].soldiers.size(),&fc,&fr);
-                float sp=g_settings.formationSpacing;
-                float engagementDistance=
-                    (float)(mr-1)*sp+(float)(fr-1)*sp
-                    +soldierMeleeRadius(td)+soldierMeleeRadius(g_unitTypes[foeTi])+6.f;
-                if(distToEnemy>engagementDistance){
-                    desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*mdt));
-                }
 
-                // Rotate formation to face enemy
-                bu.formationFacing=dirToAngle(toEnemy);
+                if(td.range>0){
+                    // Unidades ranged: SE QUEDAN A DISTANCIA. Avanzan solo
+                    // hasta su alcance de tiro (85% + profundidad de las
+                    // formaciones, baseGap) y ahi se QUEDAN SIN MOVERSE:
+                    // no retroceden (kite infinito hasta el borde del
+                    // mapa) ni cierran a cuerpo a cuerpo por iniciativa.
+                    // Si el enemigo alcanza la linea, pelean en su sitio
+                    // (melee de autodefensa, Priority 1).
+                    int mrc=1,mrr=1,frc=1,frr=1;
+                    formationDims((int)bu.soldiers.size(),&mrc,&mrr);
+                    formationDims((int)foeUnits[targetIdx].soldiers.size(),&frc,&frr);
+                    float sp=g_settings.formationSpacing;
+                    float baseGap=(float)(mrr-1)*sp+(float)(frr-1)*sp
+                        +soldierMeleeRadius(td)+soldierMeleeRadius(g_unitTypes[foeTi])+6.f;
+                    float holdDist=baseGap+(float)td.range*0.85f;
+                    if(distToEnemy>holdDist){
+                        desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*mdt));
+                    } else {
+                        anchorHold=true;
+                    }
+                    bu.formationFacing=dirToAngle(toEnemy);
+                } else {
+                    // Melee: avanzar hasta que las lineas se encuentren a
+                    // distancia de golpe SIN interpenetrarse (v9).
+                    int mc=1,mr=1,fc=1,fr=1;
+                    formationDims((int)bu.soldiers.size(),&mc,&mr);
+                    formationDims((int)foeUnits[targetIdx].soldiers.size(),&fc,&fr);
+                    float sp=g_settings.formationSpacing;
+                    float engagementDistance=
+                        (float)(mr-1)*sp+(float)(fr-1)*sp
+                        +soldierMeleeRadius(td)+soldierMeleeRadius(g_unitTypes[foeTi])+6.f;
+                    if(distToEnemy>engagementDistance){
+                        desiredAnchor=v2add(bu.anchorPos,v2scale(toEnemy,td.speed*mdt));
+                    }
+                    bu.formationFacing=dirToAngle(toEnemy);
+                }
             }
         }
 
@@ -948,7 +972,9 @@ void updateBattleUnits(std::vector<BattleUnit>& myUnits,
         // v8.3: ULTRA-AGGRESSIVE ADVANCE - almost pure desired movement
         // Only use 10% centroid correction to prevent oscillation
         // This allows anchor to lead units toward enemy without drag
-        float centroidWeight=0.1f;  // Minimal correction for all movement types
+        // (anchorHold: ranged en hold => 0%, si no el pull posicional
+        // barre el hold y acaban a cuerpo a cuerpo)
+        float centroidWeight=anchorHold?0.f:0.1f;  // Minimal correction for all movement types
         targetAnchor.x=targetAnchor.x*(1.f-centroidWeight)+actualCentroid.x*centroidWeight;
         targetAnchor.y=targetAnchor.y*(1.f-centroidWeight)+actualCentroid.y*centroidWeight;
 

@@ -87,6 +87,30 @@ void saveGame(){
         fwrite(&r.second,sizeof(int),1,f);
     }
 
+    // Fase J: ejércitos de campo + reserva
+    int nA=(int)g_campaign.armies.size();
+    fwrite(&nA,sizeof(int),1,f);
+    for(auto& a:g_campaign.armies){
+        int id=a.id, prov=a.province, own=(int)a.owner;
+        unsigned char mv=a.moved?1:0;
+        fwrite(&id,sizeof(int),1,f);
+        fwrite(&own,sizeof(int),1,f);
+        fwrite(&prov,sizeof(int),1,f);
+        fwrite(&mv,sizeof(unsigned char),1,f);
+        int nu=(int)a.units.size();
+        fwrite(&nu,sizeof(int),1,f);
+        for(auto& u:a.units){
+            fwrite(&u.first,sizeof(int),1,f);
+            fwrite(&u.second,sizeof(int),1,f);
+        }
+    }
+    int nR=(int)g_campaign.reserve.size();
+    fwrite(&nR,sizeof(int),1,f);
+    for(auto& r:g_campaign.reserve){
+        fwrite(&r.first,sizeof(int),1,f);
+        fwrite(&r.second,sizeof(int),1,f);
+    }
+
     fclose(f);
     g_hasSave=true;
     // Remember last played campaign for Continue
@@ -180,9 +204,42 @@ bool loadGame(){
         g_campaign.readyUnits.push_back({ti,cnt});
     }
 
+    // Fase J: ejércitos de campo + reserva
+    g_campaign.armies.clear();
+    g_campaign.reserve.clear();
+    int nA=0;
+    if(fread(&nA,sizeof(int),1,f)!=1||nA<0||nA>64){ fclose(f); return false; }
+    for(int i=0;i<nA;i++){
+        FieldArmy a;
+        int id=0,prov=0,own=0,nu=0;
+        unsigned char mv=0;
+        if(fread(&id,sizeof(int),1,f)!=1||fread(&own,sizeof(int),1,f)!=1||
+           fread(&prov,sizeof(int),1,f)!=1||fread(&mv,sizeof(unsigned char),1,f)!=1||
+           fread(&nu,sizeof(int),1,f)!=1||nu<0||nu>256){ fclose(f); return false; }
+        a.id=id; a.owner=(FactionId)own; a.province=prov; a.moved=(mv!=0);
+        for(int j=0;j<nu;j++){
+            int ti=0,cnt=0;
+            if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
+            a.units.push_back({ti,cnt});
+        }
+        g_campaign.armies.push_back(a);
+        if(id>=g_campaign.nextArmyId) g_campaign.nextArmyId=id+1;
+    }
+    int nR=0;
+    if(fread(&nR,sizeof(int),1,f)!=1||nR<0||nR>512){ fclose(f); return false; }
+    for(int i=0;i<nR;i++){
+        int ti=0,cnt=0;
+        if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
+        g_campaign.reserve.push_back({ti,cnt});
+    }
+
     fclose(f);
     updateProvinceCenters();
     g_campaign.playerArmy = g_campaign.readyUnits; // 1.4: sync after load
+    // Fase J: readyUnits es una vista del ejército seleccionado
+    if(!g_campaign.armies.empty()) selectArmy(0);
+    else { g_campaign.selectedArmy=-1; }
+    g_campaign.playerArmy = g_campaign.readyUnits;
     return true;
 }
 

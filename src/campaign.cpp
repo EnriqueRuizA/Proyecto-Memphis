@@ -45,6 +45,151 @@ Color factionDisplayColor(FactionId f){
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+//  Fase J: ejércitos de campo (múltiples ejércitos estilo Shogun 2)
+// ───────────────────────────────────────────────────────────────────────────
+static bool isHeroType(int ti){
+    if(ti<0||ti>=unitTypeCount()) return false;
+    return ti==UNIT_GENERAL||ti==UNIT_KING;
+}
+
+int armySoldiers(const std::vector<std::pair<int,int>>& units){
+    int s=0;
+    for(auto [ti,c]:units) s+=c;
+    return s;
+}
+
+bool armyHasKing(const std::vector<std::pair<int,int>>& units){
+    for(auto [ti,c]:units) if(ti==UNIT_KING&&c>0) return true;
+    return false;
+}
+
+int armyIndexAt(int province, FactionId owner){
+    for(int i=0;i<(int)g_campaign.armies.size();i++)
+        if(g_campaign.armies[i].province==province&&g_campaign.armies[i].owner==owner)
+            return i;
+    return -1;
+}
+
+void selectArmy(int idx){
+    // Solo ejércitos del jugador: si idx no existe o es de la IA (p.ej.
+    // selectArmy(0) cuando armies[0] es un ejército IA), cae al primero
+    // propio. readyUnits NUNCA debe contener tropas enemigas.
+    auto trySelect=[&](int i)->bool{
+        if(i<0||i>=(int)g_campaign.armies.size()) return false;
+        if(g_campaign.armies[i].owner!=FACTION_PLAYER) return false;
+        g_campaign.selectedArmy=i;
+        g_campaign.readyUnits=g_campaign.armies[i].units;
+        g_campaign.playerProvince=g_campaign.armies[i].province;
+        return true;
+    };
+    if(trySelect(idx)) return;
+    for(int i=0;i<(int)g_campaign.armies.size();i++)
+        if(trySelect(i)) return;
+    g_campaign.selectedArmy=-1;
+    g_campaign.readyUnits.clear();
+}
+
+int defenseSoldiers(int province){
+    int s=0;
+    for(auto& a:g_campaign.armies)
+        if(a.province==province&&a.owner==FACTION_PLAYER)
+            s+=armySoldiers(a.units);
+    return s;
+}
+
+// Fusiona todos los ejércitos del jugador en `province` en el primero de ellos
+// (los refuerzos se unen antes de la batalla defensiva, estilo Shogun)
+void mergePlayerDefenders(int province){
+    int first=-1;
+    for(int i=0;i<(int)g_campaign.armies.size();i++){
+        auto& a=g_campaign.armies[i];
+        if(a.province!=province||a.owner!=FACTION_PLAYER) continue;
+        if(first<0){ first=i; continue; }
+        for(auto& u:a.units) g_campaign.armies[first].units.push_back(u);
+        a.units.clear();
+    }
+    if(first<0) return;
+    // Eliminar los fusionados (índices > first)
+    std::vector<FieldArmy> keep;
+    for(int i=0;i<(int)g_campaign.armies.size();i++)
+        if(i==first||g_campaign.armies[i].province!=province||
+           g_campaign.armies[i].owner!=FACTION_PLAYER)
+            keep.push_back(g_campaign.armies[i]);
+    g_campaign.armies=std::move(keep);
+    // Re-seleccionar el ejército fusionado
+    selectArmy(armyIndexAt(province,FACTION_PLAYER));
+}
+
+// Provincia propia adyacente a la que retirarse (-1 si no existe)
+int safeRetreatProvince(int from){
+    if(from<0||from>=(int)g_campaign.provinces.size()) return -1;
+    for(int adj:g_campaign.provinces[from].adjacent){
+        if(adj<0||adj>=(int)g_campaign.provinces.size()) continue;
+        if(g_campaign.provinces[adj].owner==FACTION_PLAYER) return adj;
+    }
+    return -1;
+}
+
+// Resta `losses` soldados de los grupos en orden (aprox. de bajas enemigas)
+std::vector<std::pair<int,int>> subtractEnemyLosses(
+        const std::vector<std::pair<int,int>>& units, int losses){
+    std::vector<std::pair<int,int>> out;
+    for(auto [ti,c]:units){
+        if(losses>0){
+            int take=std::min(c,losses);
+            c-=take; losses-=take;
+        }
+        if(c>0) out.push_back({ti,c});
+    }
+    return out;
+}
+
+bool formArmyAt(int province){
+    // Requiere 1 general (o el rey) en la reserva
+    int gi=-1;
+    for(int i=0;i<(int)g_campaign.reserve.size();i++)
+        if(isHeroType(g_campaign.reserve[i].first)){ gi=i; break; }
+    if(gi<0) return false;
+    FieldArmy a;
+    a.id=g_campaign.nextArmyId++;
+    a.owner=FACTION_PLAYER;
+    a.province=province;
+    a.units.push_back(g_campaign.reserve[gi]);
+    g_campaign.reserve.erase(g_campaign.reserve.begin()+gi);
+    // Tropas no-héroe de la reserva se unen al nuevo ejército
+    std::vector<std::pair<int,int>> heroes;
+    for(auto& u:g_campaign.reserve){
+        if(isHeroType(u.first)) heroes.push_back(u);
+        else a.units.push_back(u);
+    }
+    g_campaign.reserve=std::move(heroes);
+    g_campaign.armies.push_back(a);
+    selectArmy((int)g_campaign.armies.size()-1);
+    return true;
+}
+
+void joinArmyAt(int province){
+    int ai=armyIndexAt(province,FACTION_PLAYER);
+    if(ai<0) return;
+    std::vector<std::pair<int,int>> heroes;
+    for(auto& u:g_campaign.reserve){
+        if(isHeroType(u.first)) heroes.push_back(u);
+        else g_campaign.armies[ai].units.push_back(u);
+    }
+    g_campaign.reserve=std::move(heroes);
+    if(g_campaign.selectedArmy==ai) g_campaign.readyUnits=g_campaign.armies[ai].units;
+}
+
+void disbandArmy(int idx){
+    if(idx<0||idx>=(int)g_campaign.armies.size()) return;
+    for(auto& u:g_campaign.armies[idx].units) g_campaign.reserve.push_back(u);
+    g_campaign.armies.erase(g_campaign.armies.begin()+idx);
+    int nxt=(int)g_campaign.armies.size();
+    selectArmy(nxt==0?-1:std::min(idx,nxt-1));
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
 //  GARRISON ARMIES PANEL (0.1: extracted from orphan code)
 // ───────────────────────────────────────────────────────────────────────────
 void drawGarrisonArmiesPanel(Province& prov, float gridY, float cellH, Vector2 mouse){
@@ -105,6 +250,31 @@ struct ProvinceTemplate {
     const char* name; float nx,ny; TerrainType terrain; FactionId owner; bool hasCity;
     const char* cityName;
 };
+
+// Fase J: cada facción IA levanta un ejército de campo desde su provincia con
+// mayor guarnición (el primer grupo se transfiere del garrison al ejército)
+static void spawnAIArmies(){
+    g_campaign.armies.clear();
+    g_campaign.nextArmyId=1;
+    for(int f=0;f<FACTION_COUNT;f++){
+        if(f==FACTION_PLAYER||f==FACTION_NEUTRAL) continue;
+        int best=-1,bestStr=-1;
+        for(int i=0;i<(int)g_campaign.provinces.size();i++){
+            Province& p=g_campaign.provinces[i];
+            if(p.owner!=(FactionId)f) continue;
+            int s=0; for(auto& g:p.army) s+=g.second;
+            if(s>bestStr){ bestStr=s; best=i; }
+        }
+        if(best<0||bestStr<=0||g_campaign.provinces[best].army.empty()) continue;
+        FieldArmy a;
+        a.id=g_campaign.nextArmyId++;
+        a.owner=(FactionId)f;
+        a.province=best;
+        a.units.push_back(g_campaign.provinces[best].army.front());
+        g_campaign.provinces[best].army.erase(g_campaign.provinces[best].army.begin());
+        g_campaign.armies.push_back(a);
+    }
+}
 
 void generateCampaignMap(int campaignId){
     g_campaign.provinces.clear();
@@ -279,6 +449,9 @@ void generateCampaignMap(int campaignId){
             }
         }
     }
+
+    // Fase J: ejércitos de campo IA
+    spawnAIArmies();
 }
 
 void updateProvinceCenters(){
@@ -303,26 +476,77 @@ void newCampaign(int campaignId){
     g_campaign.playerProvince=0;
     generateCampaignMap(campaignId);
     updateProvinceCenters();
-    // Player starts with 3 spear levy groups
-    g_campaign.playerArmy.push_back({0,60});
-    g_campaign.playerArmy.push_back({0,60});
-    g_campaign.playerArmy.push_back({4,40}); // Bow levy
-    g_campaign.readyUnits=g_campaign.playerArmy;
+    // Fase J: dos ejércitos iniciales — el Rey comanda el primero, un General
+    // libre el segundo. Sin general no se pueden formar ejércitos.
+    {
+        FieldArmy a1;
+        a1.id=g_campaign.nextArmyId++;
+        a1.owner=FACTION_PLAYER;
+        a1.province=0;
+        a1.units.push_back({UNIT_KING,1});
+        a1.units.push_back({0,60});
+        a1.units.push_back({0,60});
+        FieldArmy a2;
+        a2.id=g_campaign.nextArmyId++;
+        a2.owner=FACTION_PLAYER;
+        a2.province=0;
+        a2.units.push_back({UNIT_GENERAL,1});
+        a2.units.push_back({4,40}); // Bow levy
+        g_campaign.armies.push_back(a1);
+        g_campaign.armies.push_back(a2);
+        selectArmy(0);
+        g_campaign.playerArmy=g_campaign.readyUnits; // espejo legacy
+    }
     g_campaign.pendingBattleProvince=-1;
     g_campaign.turn=1;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+//  Fase J: marcha IA — 1er paso BFS por territorio propio hacia una provincia
+//  propia fronteriza con el jugador (-1 si no hay camino)
+// ───────────────────────────────────────────────────────────────────────────
+static int bfsOwnStepToPlayer(int start, FactionId owner){
+    int np=(int)g_campaign.provinces.size();
+    if(start<0||start>=np) return -1;
+    auto isGoal=[&](int i)->bool{
+        for(int adj:g_campaign.provinces[i].adjacent){
+            if(adj<0||adj>=np) continue;
+            if(g_campaign.provinces[adj].owner==FACTION_PLAYER) return true;
+        }
+        return false;
+    };
+    std::vector<int> parent(np,-1);
+    std::deque<int> q;
+    q.push_back(start); parent[start]=start;
+    int found=-1;
+    while(!q.empty()){
+        int cur=q.front(); q.pop_front();
+        if(cur!=start&&isGoal(cur)){ found=cur; break; }
+        for(int nx:g_campaign.provinces[cur].adjacent){
+            if(nx<0||nx>=np) continue;
+            if(parent[nx]!=-1) continue;
+            if(g_campaign.provinces[nx].owner!=owner) continue;
+            parent[nx]=cur;
+            q.push_back(nx);
+        }
+    }
+    if(found<0) return -1;
+    int step=found;
+    while(step!=start&&parent[step]!=start) step=parent[step];
+    return parent[step]==start?step:-1;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-//  TURN PROCESSING (centralized)
+//  TURN PROCESSING (centralized) — Fase J: devuelve true si hay batalla pendiente
 // ═══════════════════════════════════════════════════════════════════════════
-void processTurn(){
+bool processTurn(){
     Resources& r=g_campaign.res;
 
     // Advance recruitment queue
     for(auto& e:g_campaign.recruitQueue){
         e.turnsLeft--;
         if(e.turnsLeft<=0){
-            g_campaign.readyUnits.push_back({e.typeIdx,e.typeIdx<(int)g_unitTypes.size()?g_unitTypes[e.typeIdx].soldierCount:40});
+            g_campaign.reserve.push_back({e.typeIdx,e.typeIdx<(int)g_unitTypes.size()?g_unitTypes[e.typeIdx].soldierCount:40});
             battleLogAdd(TextFormat("[T%d] %s recruitment complete!", g_campaign.turn, g_unitTypes[e.typeIdx].name));
         }
     }
@@ -357,13 +581,20 @@ void processTurn(){
         }
     }
 
-    // Maintenance from all units
-    for(auto [ti,cnt]:g_campaign.readyUnits){
-        if(ti>=unitTypeCount()) continue;
-        const UnitTypeDef& td=g_unitTypes[ti];
-        r.gold-=td.maintGold*(cnt/(float)td.soldierCount);
-        r.food-=td.maintFood*(cnt/(float)td.soldierCount);
-    }
+    // Maintenance from all units (Fase J: ejércitos del jugador + reserva;
+    // readyUnits es una vista del seleccionado y NO se suma para no duplicar)
+    auto applyMaint=[&](const std::vector<std::pair<int,int>>& us){
+        for(auto [ti,cnt]:us){
+            if(ti>=unitTypeCount()) continue;
+            const UnitTypeDef& td=g_unitTypes[ti];
+            if(td.soldierCount<=0) continue;
+            r.gold-=td.maintGold*(cnt/(float)td.soldierCount);
+            r.food-=td.maintFood*(cnt/(float)td.soldierCount);
+        }
+    };
+    for(auto& a:g_campaign.armies)
+        if(a.owner==FACTION_PLAYER) applyMaint(a.units);
+    applyMaint(g_campaign.reserve);
 
     // Clamp resources (don't go negative)
     r.gold=std::max(0.f,r.gold);
@@ -407,29 +638,9 @@ void processTurn(){
         for(int ca:coalitionAttackers) if(ca==pi2){inCoalition=true;break;}
         float attackChance=inCoalition?aggression*2.f:aggression;
 
-        if(roll<attackChance*0.4f){
-            // Attack weak neighbor
-            for(int adj:ep.adjacent){
-                if(g_campaign.provinces[adj].owner==FACTION_PLAYER){
-                    int eStr=0; for(auto [ti,c]:ep.army) eStr+=c;
-                    int pStr=(int)g_campaign.readyUnits.size()*40;
-                    if(eStr>(int)(pStr*1.2f)){
-                        g_preBattle.provinceIdx=adj;
-                        g_preBattle.isDefense=true;
-                        g_preBattle.fogOfWar=false;
-                        g_preBattle.estimatedEnemyStrength=eStr;
-                        g_preBattle.include.clear();
-                        g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
-                        for(int j=12;j<(int)g_preBattle.include.size();j++)
-                            g_preBattle.include[j]=false;
-                        g_campaign.provinces[adj].army=ep.army;
-                        g_campaign.battlesLost=g_campaign.battlesLost;
-                        // Don't return here - we'll handle battle after incrementing turn
-                    }
-                    break;
-                }
-            }
-        } else if(roll<attackChance*0.4f+0.2f){
+        // Fase J: los ataques ya no salen de las guarniciones — los ejércitos
+        // de campo IA se encargan (ver bloque siguiente). Aquí solo refuerzos.
+        if(roll<attackChance*0.4f+0.2f){
             // Reinforcement transfer
             for(int adj:ep.adjacent){
                 Province& ap=g_campaign.provinces[adj];
@@ -452,6 +663,72 @@ void processTurn(){
         }
     }
 
+    // Fase J: ejércitos de campo IA — marchan hacia el jugador y atacan
+    bool battlePending=false;
+    int np=(int)g_campaign.provinces.size();
+    for(int ai=0;ai<(int)g_campaign.armies.size()&&!battlePending;ai++){
+        FieldArmy& a=g_campaign.armies[ai];
+        if(a.owner==FACTION_PLAYER||a.owner==FACTION_NEUTRAL) continue;
+        a.moved=false;
+        if(a.province<0||a.province>=np) continue;
+
+        // Provincia del jugador adyacente más débil
+        int target=-1,targetDef=1<<30;
+        for(int adj:g_campaign.provinces[a.province].adjacent){
+            if(adj<0||adj>=np) continue;
+            if(g_campaign.provinces[adj].owner!=FACTION_PLAYER) continue;
+            int def=defenseSoldiers(adj);
+            if(def<targetDef){ targetDef=def; target=adj; }
+        }
+        int eStr=armySoldiers(a.units);
+        float roll=frandMT();
+        bool inCoalition=false;
+        for(int ca:coalitionAttackers) if(ca==a.province){inCoalition=true;break;}
+        float attackChance=inCoalition?aggression*2.f:aggression;
+
+        if(target>=0){
+            if(targetDef<=0){
+                // Provincia indefensa: anexión directa, sin batalla
+                if(roll<attackChance*0.4f){
+                    g_campaign.provinces[target].owner=a.owner;
+                    g_campaign.provinces[target].army.clear();
+                    a.province=target;
+                    a.moved=true;
+                    battleLogAdd(TextFormat("[T%d] %s seized %s!",g_campaign.turn,
+                                 factionNames[a.owner],g_campaign.provinces[target].name));
+                }
+            } else if(eStr>(int)(targetDef*0.75f)&&roll<attackChance*0.8f){
+                // Ataque => batalla defensiva del jugador
+                mergePlayerDefenders(target);
+                int di=armyIndexAt(target,FACTION_PLAYER);
+                selectArmy(di); // readyUnits = defensores fusionados
+                g_preBattle.provinceIdx=target;
+                g_preBattle.isDefense=true;
+                g_preBattle.fogOfWar=false;
+                g_preBattle.estimatedEnemyStrength=eStr+(int)((frandMT()-0.5f)*20);
+                g_preBattle.attackerFaction=a.owner;
+                g_preBattle.attackerArmyIdx=ai;
+                g_preBattle.armyIdx=di;
+                g_preBattle.hadKing=(di>=0&&armyHasKing(g_campaign.armies[di].units));
+                g_preBattle.enemyUnits=a.units;
+                g_preBattle.include.assign(g_campaign.readyUnits.size(),true);
+                for(int j=12;j<(int)g_preBattle.include.size();j++)
+                    g_preBattle.include[j]=false;
+                battlePending=true;
+            }
+        } else {
+            // Marchar hacia la frontera del jugador: 1 paso por turno,
+            // solo por territorio propio
+            int step=bfsOwnStepToPlayer(a.province,a.owner);
+            if(step>=0){ a.province=step; a.moved=true; }
+        }
+    }
+
+    // Fase J: los ejércitos del jugador ya no se mueven con la animación
+    // (el movimiento consume su propio `moved`); al terminar el turno se
+    // reinician para la siguiente ronda.
+    for(auto& a:g_campaign.armies) a.moved=false;
+
     // Check victory condition
     int totalProv=(int)g_campaign.provinces.size();
     int playerProv=0;
@@ -466,6 +743,7 @@ void processTurn(){
 
     // Finally: Increment turn after all processing
     g_campaign.turn++;
+    return battlePending;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

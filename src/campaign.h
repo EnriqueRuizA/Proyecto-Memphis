@@ -43,6 +43,19 @@ struct RecruitEntry {
     int originalTurns;  // 4.3: for progress bar
 };
 
+// Fase J: ejércitos de campo (múltiples ejércitos estilo Shogun 2)
+struct FieldArmy {
+    int      id=0;
+    FactionId owner=FACTION_PLAYER;
+    int      province=0;   // provincia donde se encuentra
+    bool     moved=false;  // ya se movió/atacó este turno
+    std::vector<std::pair<int,int>> units; // {typeIdx, soldierCount}
+};
+
+// Fase J: índices de los tipos de unidad héroe (initBuiltinTypes)
+inline const int UNIT_GENERAL=8;
+inline const int UNIT_KING=9;
+
 // (:567-594)
 struct CampaignState {
     int              campaignId=0;     // which campaign map (0..MAX_CAMPAIGNS-1)
@@ -59,8 +72,14 @@ struct CampaignState {
     int              viewedCity=-1;
     // Recruitment queue per city (province index -> queue)
     std::vector<RecruitEntry> recruitQueue; // for viewed city
-    // Available units (ready to deploy) - province index -> ready units
+    // Fase J: unidades sin asignar en reserva (reclutamiento + generales);
+    // readyUnits es ahora una VISTA del ejército seleccionado
+    std::vector<std::pair<int,int>> reserve;
     std::vector<std::pair<int,int>> readyUnits;
+    // Fase J: múltiples ejércitos de campo (jugador + IA)
+    std::vector<FieldArmy> armies;
+    int              selectedArmy=-1;
+    int              nextArmyId=1;
     // 6.3: Fog of war — explored provinces
     bool             explored[32]={};   // true if province has been seen
     // Fase D+: facciones aliadas con el jugador (persistencia en Fase I)
@@ -72,6 +91,7 @@ struct CampaignState {
     // Army movement animation (campaign map)
     int              armyMoveFrom=-1;
     int              armyMoveTo=-1;
+    int              armyMoveIdx=-1;   // Fase J: qué ejército se está moviendo
     float            armyMoveT=0.f;
 };
 
@@ -85,6 +105,12 @@ struct PreBattleState {
     // Enemy info
     bool fogOfWar;
     int  estimatedEnemyStrength;
+    // Fase J
+    std::vector<std::pair<int,int>> enemyUnits; // snapshot: guarnición o ejército atacante
+    int  attackerFaction=-1; // facción atacante en defensa (-1 si el jugador ataca)
+    int  attackerArmyIdx=-1; // ejército IA atacante (-1 si no)
+    int  armyIdx=-1;         // ejército del jugador involucrado (-1 si no)
+    bool hadKing=false;      // el rey estaba en el ejército antes de la batalla
 };
 
 extern CampaignState  g_campaign;  // (:596)
@@ -108,6 +134,20 @@ extern int g_selectedProvince;  // 4.5: pulsing selected province
 void generateCampaignMap(int campaignId);        // (:1039)
 void updateProvinceCenters();                    // (:1214)
 void newCampaign(int campaignId);                // (:1224)
-void processTurn();                              // (:1248)
+bool processTurn();                              // (:1248) — Fase J: true = hay batalla pendiente (defensa IA)
 void drawGarrisonArmiesPanel(Province& prov, float gridY, float cellH, Vector2 mouse); // (:820)
 void drawCampaignMovementArrows();               // (:849)
+
+// Fase J: ejércitos de campo
+int  armyIndexAt(int province, FactionId owner);      // primer ejército de `owner` en provincia (-1)
+void selectArmy(int idx);                             // sincroniza readyUnits + playerProvince
+bool formArmyAt(int province);                        // consume 1 general de la reserva + tropas no-héroe
+void joinArmyAt(int province);                        // reserva (no-héroes) -> ejército existente
+void disbandArmy(int idx);                            // ejército -> reserva
+int  armySoldiers(const std::vector<std::pair<int,int>>& units);
+int  defenseSoldiers(int province);                   // soldados del jugador en la provincia
+bool armyHasKing(const std::vector<std::pair<int,int>>& units);
+void mergePlayerDefenders(int province);              // fusiona ejércitos del jugador en la provincia
+int  safeRetreatProvince(int from);                   // provincia propia adyacente (-1 si no hay)
+std::vector<std::pair<int,int>> subtractEnemyLosses(
+    const std::vector<std::pair<int,int>>& units, int losses); // approx: bajas enemigas

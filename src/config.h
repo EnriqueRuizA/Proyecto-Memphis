@@ -114,7 +114,7 @@ void saveSettings();
 void loadSettings();
 
 // === GUARDADO ===
-inline const int SAVE_VERSION = 5;   // (:24)
+inline const int SAVE_VERSION = 6;   // 6: Fase J (ejércitos de campo + reserva)
 
 // === ESTADO GLOBAL (:681-684) ===
 extern GameState g_state;

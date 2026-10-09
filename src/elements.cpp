@@ -57,6 +57,11 @@ void initBuiltinTypes(){
     add("Mounted Sergeants",      40, 20, 8, 160,  28,  20, 15.f, 4.f, 1.4f, 0,  0.f,  0.f, 0.f,  520,  80,  40,   2,  60, 30, 83.f, 140, 90, 60, SPR_CAVALRY,   0,  2,   "Light cavalry. Swift flankers and pursuit specialists.");
     add("Knights",                24, 42, 26,140,  50,  34, 26.f,18.f, 1.5f, 0,  0.f,  0.f, 0.f,  960, 120, 120,   4, 110, 25, 92.f, 220,220,200, SPR_CAVALRY,   0,  18,  "Heavy armored knights. Devastating charge, supreme melee prowess.");
 
+    // Fase J: héroes. soldierCount=1 (unidad individual), recruit*=-1 => no
+    // aparecen en la lista de reclutamiento (se contratan como generales).
+    add("General",                 1,150, 25, 80,  45,  35, 20.f, 8.f, 1.2f, 0,  0.f,  0.f, 0.f,   -1, -1,  -1,  -1,   8,  4, 96.f, 210,175, 90, SPR_INFANTRY,  1,   0,  "A battlefield commander. Required to lead a field army.");
+    add("King",                    1,300, 32, 80,  55,  45, 24.f,10.f, 1.1f, 0,  0.f,  0.f, 0.f,   -1, -1,  -1,  -1,  12,  6, 99.f, 240,200, 60, SPR_INFANTRY,  1,   0,  "The sovereign himself. If he falls in battle, the realm is lost.");
+
     g_vanillaUnitTypes = g_unitTypes;
 
     loadUnitSheets(); // hojas Kenney (assets/sprites); si faltan → procedural

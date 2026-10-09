@@ -36,6 +36,7 @@ bool      g_fadingOut     = false;
 
 // ───────────────────────────────────────────────────────────────────────────
 bool g_quickBattle = false;
+bool g_kingLost    = false; // Fase J: el rey murió en la última batalla
 struct QuickBattleSetup {
     std::vector<int> playerCounts;
     std::vector<int> enemyCounts;
@@ -507,7 +508,51 @@ GameState updateDrawBattleResult(Vector2 mouse){
         // Actually update ownership
         if(prov.owner!=FACTION_PLAYER){
             prov.owner=FACTION_PLAYER;
+            prov.army.clear(); // guarnición conquistada
+            // Fase J: el ejército ganador ocupa la provincia capturada
+            int ai=g_preBattle.armyIdx;
+            if(ai>=0&&ai<(int)g_campaign.armies.size()){
+                g_campaign.armies[ai].province=g_lastResult.provinceIdx;
+                g_campaign.armies[ai].moved=true;
+                selectArmy(ai);
+            }
             g_campaign.playerProvince=g_lastResult.provinceIdx;
+        }
+    }
+    // Fase J: derrota en defensa — el atacante ocupa la provincia
+    if(!g_lastResult.playerWon&&g_lastResult.isDefense&&g_preBattle.attackerFaction>=0
+       &&g_lastResult.provinceIdx>=0&&g_lastResult.provinceIdx<(int)g_campaign.provinces.size()){
+        Province& prov=g_campaign.provinces[g_lastResult.provinceIdx];
+        if(prov.owner==FACTION_PLAYER){
+            prov.owner=(FactionId)g_preBattle.attackerFaction;
+            prov.army.clear();
+            // El ejército atacante entra con sus bajas aproximadas
+            int tAi=g_preBattle.attackerArmyIdx;
+            if(tAi>=0&&tAi<(int)g_campaign.armies.size()){
+                g_campaign.armies[tAi].units=subtractEnemyLosses(
+                    g_preBattle.enemyUnits,g_lastResult.enemyLosses);
+                if(g_campaign.armies[tAi].units.empty()){
+                    g_campaign.armies.erase(g_campaign.armies.begin()+tAi);
+                    if(g_campaign.selectedArmy>=tAi) g_campaign.selectedArmy--;
+                } else {
+                    g_campaign.armies[tAi].province=g_lastResult.provinceIdx;
+                    g_campaign.armies[tAi].moved=true;
+                }
+            }
+            // El ejército del jugador se retira a una provincia propia
+            int pi=g_lastResult.provinceIdx;
+            int dAi=g_preBattle.armyIdx;
+            if(dAi>=0&&dAi<(int)g_campaign.armies.size()){
+                g_campaign.armies[dAi].units=g_lastResult.survivors;
+                int rp=safeRetreatProvince(pi);
+                if(rp>=0) g_campaign.armies[dAi].province=rp;
+                else {
+                    g_campaign.armies.erase(g_campaign.armies.begin()+dAi);
+                    if(g_campaign.selectedArmy>=dAi) g_campaign.selectedArmy--;
+                }
+            }
+            int sel=g_campaign.selectedArmy;
+            selectArmy(sel>=0&&sel<(int)g_campaign.armies.size()?sel:-1);
         }
     }
 
@@ -517,29 +562,60 @@ GameState updateDrawBattleResult(Vector2 mouse){
         g_lastResult.lootApplied=true;
         // Update player army with survivors (so dead soldiers don't "resurrect")
         if(!g_quickBattle){
-            g_campaign.playerArmy.clear();
-            for(int i=0;i<(int)g_lastResult.survivors.size();i++){
-                int ti=g_lastResult.survivors[i].first;
-                int cnt=g_lastResult.survivors[i].second;
-                if(ti>=0&&ti<unitTypeCount()&&cnt>0)
-                    g_campaign.playerArmy.push_back({ti,cnt});
+            // Fase J: escribir supervivientes en el ejército involucrado
+            int ai=g_preBattle.armyIdx;
+            if(ai>=0&&ai<(int)g_campaign.armies.size()){
+                auto& u=g_campaign.armies[ai].units;
+                u.clear();
+                for(int i=0;i<(int)g_lastResult.survivors.size();i++){
+                    int ti=g_lastResult.survivors[i].first;
+                    int cnt=g_lastResult.survivors[i].second;
+                    if(ti>=0&&ti<unitTypeCount()&&cnt>0) u.push_back({ti,cnt});
+                }
+                if(u.empty()){
+                    g_campaign.armies.erase(g_campaign.armies.begin()+ai);
+                    selectArmy(g_campaign.armies.empty()?-1:
+                               std::min(ai,(int)g_campaign.armies.size()-1));
+                } else {
+                    g_campaign.readyUnits=u;
+                }
             }
-            g_campaign.readyUnits=g_campaign.playerArmy;
+            g_campaign.playerArmy=g_campaign.readyUnits;
+            // Fase J: si el rey estaba y no sobrevivió → fin de la partida
+            if(g_preBattle.hadKing){
+                bool kingAlive=false;
+                for(auto& s:g_lastResult.survivors)
+                    if(s.first==UNIT_KING&&s.second>0) kingAlive=true;
+                if(!kingAlive) g_kingLost=true;
+            }
             // Track stats for 3.4
             if(g_lastResult.playerWon) g_campaign.battlesWon++;
             else g_campaign.battlesLost++;
         }
     }
 
+    // Fase J: el rey ha caído
+    if(g_kingLost){
+        const char* kl="THE KING HAS FALLEN!";
+        DrawText(kl,SCREEN_W/2-MeasureText(kl,20)/2,208,20,C_ENEMY_COL);
+    }
+
     // (Survivor list and province capture already shown above; army updated in lootApplied block)
 
     // Continue button
     if(drawButton({(float)(SCREEN_W/2-140),(float)(SCREEN_H-80),280,54},"CONTINUE",mouse)){
+        bool kingLost=g_kingLost;
+        g_kingLost=false;
         g_lastResult.lootApplied=false;  // reset for next battle
         if(g_quickBattle){
             g_quickBattle=false;
             return STATE_MAIN_MENU;
         }
+        if(kingLost) return STATE_DEFEAT;
+        // Sin provincias → derrota (p.ej. la última cayó en esta defensa)
+        int playerProv=0;
+        for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+        if(playerProv==0) return STATE_DEFEAT;
         return STATE_CAMPAIGN_MAP;
     }
     return STATE_BATTLE_RESULT;
@@ -606,18 +682,15 @@ GameState updateDrawPreBattle(Vector2 mouse){
         DrawText("(Scout reports unreliable — deploy explorers for better intel)",
                  14,(int)(106+halfH),12,{100,80,60,255});
     } else {
-        // Show actual army
-        int pi=g_preBattle.provinceIdx;
-        if(pi>=0&&pi<(int)g_campaign.provinces.size()){
-            for(int i=0;i<(int)g_campaign.provinces[pi].army.size();i++){
-                auto [ti,cnt]=g_campaign.provinces[pi].army[i];
-                if(ti>=unitTypeCount()) continue;
-                const UnitTypeDef& td=g_unitTypes[ti];
-                float ry=84.f+halfH+i*28.f;
-                DrawRectangle(8,(int)(ry+4),16,16,{td.r,td.g,td.b,100});
-                DrawText(td.name,30,(int)(ry+6),13,C_PARCHMENT);
-                DrawText(TextFormat("x%d",cnt),280,(int)(ry+6),12,C_ENEMY_COL);
-            }
+        // Show actual army (Fase J: snapshot del enemigo, no la guarnición)
+        for(int i=0;i<(int)g_preBattle.enemyUnits.size();i++){
+            auto [ti,cnt]=g_preBattle.enemyUnits[i];
+            if(ti>=unitTypeCount()) continue;
+            const UnitTypeDef& td=g_unitTypes[ti];
+            float ry=84.f+halfH+i*28.f;
+            DrawRectangle(8,(int)(ry+4),16,16,{td.r,td.g,td.b,100});
+            DrawText(td.name,30,(int)(ry+6),13,C_PARCHMENT);
+            DrawText(TextFormat("x%d",cnt),280,(int)(ry+6),12,C_ENEMY_COL);
         }
     }
 
@@ -643,7 +716,7 @@ GameState updateDrawPreBattle(Vector2 mouse){
             // Composición desconocida: proxy con tropa base + estimación de exploradores
             int est=g_preBattle.estimatedEnemyStrength; if(est<0) est=0;
             if(unitTypeCount()>0) predE.push_back({0,est});
-        } else predE=g_campaign.provinces[piP].army;
+        } else predE=g_preBattle.enemyUnits;
     }
     if(canStart){
         float pch=predictBattle(predP,predE,terP,g_preBattle.isDefense,defP);
@@ -660,8 +733,7 @@ GameState updateDrawPreBattle(Vector2 mouse){
                   canStart?Color{70,55,25,255}:Color{30,30,30,255},
                   canStart?Color{125,100,45,255}:Color{30,30,30,255})&&canStart){
         std::vector<std::pair<int,int>> playerGroups=predP;
-        std::vector<std::pair<int,int>> enemyGroups;
-        if(piOk) enemyGroups=g_campaign.provinces[piP].army;
+        std::vector<std::pair<int,int>> enemyGroups=g_preBattle.enemyUnits;
         autoResolveBattle(playerGroups,enemyGroups,terP,piP,g_preBattle.isDefense,defP);
         return STATE_BATTLE_RESULT;
     }
@@ -673,8 +745,7 @@ GameState updateDrawPreBattle(Vector2 mouse){
                 playerGroups.push_back(g_campaign.readyUnits[i]);
         }
         int pi=g_preBattle.provinceIdx;
-        if(pi>=0&&pi<(int)g_campaign.provinces.size())
-            enemyGroups=g_campaign.provinces[pi].army;
+        enemyGroups=g_preBattle.enemyUnits;
         char sname[64];
         snprintf(sname,63,"Battle of %s",
                  (pi>=0&&pi<(int)g_campaign.provinces.size())?g_campaign.provinces[pi].name:"Unknown");
@@ -686,8 +757,30 @@ GameState updateDrawPreBattle(Vector2 mouse){
     if(drawButton({(float)(SCREEN_W-200),(float)(bY+6),186,46},"RETREAT",mouse,{55,20,20,255},{90,35,35,255})){
         if(g_preBattle.isDefense&&g_preBattle.provinceIdx>=0&&
            g_preBattle.provinceIdx<(int)g_campaign.provinces.size()){
-            // Lose province
-            g_campaign.provinces[g_preBattle.provinceIdx].owner=FACTION_NEUTRAL;
+            // Lose province — Fase J: pasa al atacante (no a neutral)
+            int pi=g_preBattle.provinceIdx;
+            Province& prov=g_campaign.provinces[pi];
+            prov.owner=g_preBattle.attackerFaction>=0?
+                       (FactionId)g_preBattle.attackerFaction:FACTION_NEUTRAL;
+            prov.army.clear();
+            // El ejército atacante ocupa
+            int tAi=g_preBattle.attackerArmyIdx;
+            if(tAi>=0&&tAi<(int)g_campaign.armies.size()){
+                g_campaign.armies[tAi].province=pi;
+                g_campaign.armies[tAi].moved=true;
+            }
+            // Los ejércitos del jugador se retiran a provincia propia
+            int dAi=g_preBattle.armyIdx;
+            if(dAi>=0&&dAi<(int)g_campaign.armies.size()){
+                int rp=safeRetreatProvince(pi);
+                if(rp>=0) g_campaign.armies[dAi].province=rp;
+                else {
+                    g_campaign.armies.erase(g_campaign.armies.begin()+dAi);
+                    if(g_campaign.selectedArmy>=dAi) g_campaign.selectedArmy--;
+                }
+            }
+            int sel=g_campaign.selectedArmy;
+            selectArmy(sel>=0&&sel<(int)g_campaign.armies.size()?sel:-1);
         }
         return STATE_CAMPAIGN_MAP;
     }
@@ -708,17 +801,33 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         g_campaign.armyMoveT += dt/ARMY_MOVE_DURATION;
         if(g_campaign.armyMoveT>=1.f){
             int to = g_campaign.armyMoveTo;
-            g_campaign.playerProvince = to;
+            int mi = g_campaign.armyMoveIdx;
             g_campaign.armyMoveFrom = -1;
             g_campaign.armyMoveTo = -1;
+            g_campaign.armyMoveIdx = -1;
             g_campaign.armyMoveT = 0.f;
-            processTurn();
+            // Fase J: el movimiento consume el turno DEL EJÉRCITO (moved),
+            // no avanza el turno global — eso lo hace END TURN
+            if(mi>=0&&mi<(int)g_campaign.armies.size()){
+                g_campaign.armies[mi].province=to;
+                g_campaign.armies[mi].moved=true;
+                selectArmy(mi);
+            } else {
+                g_campaign.playerProvince = to;
+            }
             if(!g_campaign.provinces[to].army.empty()){
+                // Guarnición hostil en provincia propia (legado)
                 g_preBattle.provinceIdx=to;
                 g_preBattle.isDefense=true;
                 g_preBattle.fogOfWar=false;
                 g_preBattle.estimatedEnemyStrength=0;
                 for(auto [ti,c]:g_campaign.provinces[to].army) g_preBattle.estimatedEnemyStrength+=c;
+                g_preBattle.attackerFaction=-1;
+                g_preBattle.attackerArmyIdx=-1;
+                g_preBattle.armyIdx=mi;
+                g_preBattle.hadKing=(mi>=0&&mi<(int)g_campaign.armies.size()&&
+                                     armyHasKing(g_campaign.armies[mi].units));
+                g_preBattle.enemyUnits=g_campaign.provinces[to].army;
                 g_preBattle.include.clear();
                 g_preBattle.include.resize(g_campaign.readyUnits.size(),true);
                 for(int j=12;j<(int)g_preBattle.include.size();j++)
@@ -801,6 +910,52 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         }
     }
 
+    // Fase J: badges de ejércitos de campo — selección y estado (moved)
+    {
+        auto armiesAtProv=[&](int prov)->std::vector<int>{
+            std::vector<int> v;
+            for(int i=0;i<(int)g_campaign.armies.size();i++)
+                if(g_campaign.armies[i].province==prov) v.push_back(i);
+            return v;
+        };
+        auto badgeRect=[&](int prov,int k,int cnt)->Rectangle{
+            float w=40.f,h=18.f,gap=4.f;
+            float total=(float)cnt*(w+gap)-gap;
+            float bx=g_campaign.provinces[prov].center.x-total*0.5f+(float)k*(w+gap);
+            float by=g_campaign.provinces[prov].center.y-38.f-38.f;
+            return {bx,by,w,h};
+        };
+        for(int i=0;i<(int)g_campaign.provinces.size();i++){
+            std::vector<int> list=armiesAtProv(i);
+            if(list.empty()) continue;
+            bool explored=(i<32&&g_campaign.explored[i]);
+            for(int k=0;k<(int)list.size();k++){
+                int idx=list[k];
+                FieldArmy& a=g_campaign.armies[idx];
+                // El ejército en animación no muestra badge en origen/destino
+                if(armyMoving&&idx==g_campaign.armyMoveIdx) continue;
+                bool isPlayerSide=(a.owner==FACTION_PLAYER);
+                if(!isPlayerSide&&!explored) continue; // IA oculta sin explorar
+                Rectangle br=badgeRect(i,k,(int)list.size());
+                // Clic: solo ejércitos del jugador → seleccionar
+                if(isPlayerSide&&!armyMoving&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)
+                   &&ptInRect(mouse,br)){
+                    selectArmy(idx);
+                    return STATE_CAMPAIGN_MAP;
+                }
+                bool sel=(idx==g_campaign.selectedArmy);
+                Color border=sel?C_GOLD:(a.moved?Color{110,110,110,255}:C_ALLY);
+                if(!isPlayerSide) border=factionColors[(int)a.owner];
+                DrawRectangle((int)br.x,(int)br.y,(int)br.width,(int)br.height,{15,22,30,235});
+                DrawRectangleLinesEx(br,sel?2.f:1.f,border);
+                char bl[12];
+                snprintf(bl,11,"%d",armySoldiers(a.units));
+                DrawText(bl,(int)(br.x+br.width/2)-MeasureText(bl,11)/2,(int)br.y+3,11,
+                         isPlayerSide?C_PARCHMENT:C_ENEMY_COL);
+            }
+        }
+    }
+
     // Moving army animation: draw icon between origin and destination
     if(armyMoving && g_campaign.armyMoveFrom>=0 && g_campaign.armyMoveTo<(int)g_campaign.provinces.size()){
         Vector2 from = g_campaign.provinces[g_campaign.armyMoveFrom].center;
@@ -843,8 +998,12 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             int tot=0; for(auto [ti,c]:p.army) tot+=c;
             bool isAdjHover=false;
             for(int adj:g_campaign.provinces[g_campaign.playerProvince].adjacent) if(adj==i) isAdjHover=true;
+            // Fase J: solo el ejército seleccionado (y aún sin mover) puede actuar
+            int selArmy=g_campaign.selectedArmy;
+            bool armyCanAct=selArmy>=0&&selArmy<(int)g_campaign.armies.size()
+                            &&!g_campaign.armies[selArmy].moved;
             bool showOdds=isAdjHover&&!armyMoving&&p.owner!=FACTION_PLAYER
-                          &&!g_campaign.readyUnits.empty()&&explored;
+                          &&armyCanAct&&explored;
             float twW=uiPx(240.f), twH=lineH1+lineH2*(showOdds?6.f:5.f)+uiPx(8.f);
             float tx=mouse.x+10, ty=mouse.y-twH-8;
             if(ty<uiPx(4.f)) ty=mouse.y+rad+uiPx(8.f);
@@ -860,16 +1019,27 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                 std::vector<std::pair<int,int>> tipP;
                 for(int k=0;k<(int)g_campaign.readyUnits.size()&&k<12;k++)
                     tipP.push_back(g_campaign.readyUnits[k]);
+                // Fase J: enemigo = guarnición + ejércitos de campo de la facción
+                std::vector<std::pair<int,int>> tipE=p.army;
+                for(auto& fa:g_campaign.armies)
+                    if(fa.province==i&&fa.owner==p.owner&&fa.owner!=FACTION_PLAYER)
+                        for(auto& u:fa.units) tipE.push_back(u);
                 float db=p.hasCity?p.city.defBonus:1.f;
-                float oc2=predictBattle(tipP,p.army,p.terrain,false,db);
+                float oc2=predictBattle(tipP,tipE,p.terrain,false,db);
                 int opct=(int)(oc2*100.f+0.5f);
                 Color opc= oc2>=0.60f?Color{90,220,90,255}:
                           (oc2>=0.40f?Color{230,200,90,255}:Color{230,90,90,255});
                 DrawText(TextFormat("Predicted victory: %d%%",opct),(int)tx,(int)ty,12,opc); ty+=lineH2;
             }
-            // Tooltip: warn that moving here advances turn (before the click)
-            if(isAdjHover&&!armyMoving)
-                DrawText("Click to move here (advances turn)",(int)tx,(int)ty,11,{255,220,100,255});
+            // Tooltip: estado del ejército seleccionado (Fase J: ya no avanza turno)
+            if(isAdjHover&&!armyMoving){
+                if(armyCanAct)
+                    DrawText("Click to move here (1 move/turn)",(int)tx,(int)ty,11,{255,220,100,255});
+                else if(selArmy>=0&&selArmy<(int)g_campaign.armies.size())
+                    DrawText("Army already moved this turn",(int)tx,(int)ty,11,{230,140,80,255});
+                else
+                    DrawText("Select an army first",(int)tx,(int)ty,11,{230,140,80,255});
+            }
 
             // Click to interact (ignored while army is moving)
             if(!armyMoving&&IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
@@ -884,18 +1054,28 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     return STATE_CITY_MANAGEMENT;
                 } else if(isAdj){
                     if(p.owner==FACTION_PLAYER){
-                        // Start movement animation; turn and battle check happen when animation completes
-                        g_campaign.armyMoveFrom=g_campaign.playerProvince;
-                        g_campaign.armyMoveTo=i;
-                        g_campaign.armyMoveT=0.f;
-                    } else {
-                        // Initiate battle with enemy province
+                        // Fase J: mover el ejército seleccionado (si aún puede)
+                        if(armyCanAct){
+                            g_campaign.armyMoveFrom=g_campaign.playerProvince;
+                            g_campaign.armyMoveTo=i;
+                            g_campaign.armyMoveIdx=selArmy;
+                            g_campaign.armyMoveT=0.f;
+                        }
+                    } else if(armyCanAct){
+                        // Initiate battle with enemy province (Fase J)
+                        std::vector<std::pair<int,int>> eu=p.army;
+                        for(auto& fa:g_campaign.armies)
+                            if(fa.province==i&&fa.owner==p.owner&&fa.owner!=FACTION_PLAYER)
+                                for(auto& u:fa.units) eu.push_back(u);
                         g_preBattle.provinceIdx=i;
                         g_preBattle.isDefense=false;
                         g_preBattle.fogOfWar=(p.owner!=FACTION_NEUTRAL);
-                        g_preBattle.estimatedEnemyStrength=0;
-                        for(auto [ti,c]:p.army) g_preBattle.estimatedEnemyStrength+=c;
-                        g_preBattle.estimatedEnemyStrength+=(int)((frandMT()-0.5f)*20);
+                        g_preBattle.estimatedEnemyStrength=armySoldiers(eu)+(int)((frandMT()-0.5f)*20);
+                        g_preBattle.attackerFaction=-1;
+                        g_preBattle.attackerArmyIdx=-1;
+                        g_preBattle.armyIdx=selArmy;
+                        g_preBattle.hadKing=armyHasKing(g_campaign.armies[selArmy].units);
+                        g_preBattle.enemyUnits=eu;
                         g_preBattle.include.clear();
                         g_preBattle.include.resize(g_campaign.readyUnits.size(),false);
                         // Auto-select all by default
@@ -920,6 +1100,24 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     DrawText(TextFormat("Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
              r.gold,r.food,r.wood,r.stone,r.iron),(int)resX,(int)topBarY,13,C_PARCHMENT);
 
+    // Fase J: estado del ejército seleccionado (esquina superior derecha)
+    if(g_campaign.selectedArmy>=0&&g_campaign.selectedArmy<(int)g_campaign.armies.size()
+       &&g_campaign.armies[g_campaign.selectedArmy].owner==FACTION_PLAYER){
+        FieldArmy& sa=g_campaign.armies[g_campaign.selectedArmy];
+        // Numeración propia: solo ejércitos del jugador (los IA no cuentan)
+        int ord=0,ptot=0;
+        for(int i=0;i<(int)g_campaign.armies.size();i++){
+            if(g_campaign.armies[i].owner!=FACTION_PLAYER) continue;
+            ptot++;
+            if(i==g_campaign.selectedArmy) ord=ptot;
+        }
+        char abuf[80];
+        snprintf(abuf,79,"Army %d/%d: %d soldiers%s",ord,ptot,armySoldiers(sa.units),
+                 sa.moved?" - moved":"");
+        int abw=MeasureText(abuf,13);
+        DrawText(abuf,SCREEN_W-abw-12,(int)topBarY+1,13,sa.moved?C_SECONDARY:C_GOLD);
+    }
+
     // Bottom buttons
     float botBarH=uiPx(50.f);
     float botBarY=(float)SCREEN_H-botBarH;
@@ -928,7 +1126,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
 
     float btnY=botBarY+(botBarH-uiPx(34.f))*0.5f;
     if(!armyMoving&&drawSmBtn({uiPx(10.f),btnY,uiPx(140.f),uiPx(34.f)},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
-        processTurn();
+        bool pending=processTurn(); // Fase J: true = la IA ataca => pre-battle
         // Check victory/defeat after processing
         int totalProv=(int)g_campaign.provinces.size();
         int playerProv=0;
@@ -939,6 +1137,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         if(playerProv==0){
             return STATE_DEFEAT;
         }
+        if(pending) return STATE_PRE_BATTLE;
     }
     float bw=uiPx(120.f), bw2=uiPx(140.f), bh=uiPx(34.f);
     float bx=uiPx(10.f)+uiPx(140.f)+uiPx(10.f);
@@ -950,6 +1149,16 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     }
     bx+=bw+uiPx(10.f);
     if(drawSmBtn({bx,btnY,bw2,bh},"MARKETPLACE",mouse)) return STATE_MARKETPLACE;
+    bx+=bw2+uiPx(10.f);
+    // Fase J: disolver ejército seleccionado → reserva
+    {
+        bool haveSel=g_campaign.selectedArmy>=0&&g_campaign.selectedArmy<(int)g_campaign.armies.size();
+        if(drawSmBtn({bx,btnY,bw,bh},"DISBAND",mouse,
+                     haveSel?Color{50,25,25,255}:Color{25,25,25,255},
+                     haveSel?Color{80,40,40,255}:Color{25,25,25,255})&&haveSel){
+            disbandArmy(g_campaign.selectedArmy);
+        }
+    }
     if(drawSmBtn({(float)(SCREEN_W-uiPx(130.f)),btnY,bw,bh},"MENU",mouse,
                   {50,20,20,255},{90,38,38,255})) return STATE_MAIN_MENU;
 
@@ -1081,6 +1290,27 @@ GameState updateDrawCityManagement(Vector2 mouse){
     DrawText(TextFormat("Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
              res.gold,res.food,res.wood,res.stone,res.iron),14,SCREEN_H-34,13,C_PARCHMENT);
 
+    // Fase J: reservas → formar/unir ejército (requiere general en reserva)
+    {
+        int resNonHero=0,resHeroes=0;
+        for(auto& u:g_campaign.reserve){
+            if(u.first==UNIT_GENERAL||u.first==UNIT_KING) resHeroes++;
+            else resNonHero+=u.second;
+        }
+        int armyHere=armyIndexAt(g_campaign.viewedCity,FACTION_PLAYER);
+        if(resHeroes>0){
+            if(drawSmBtn({(float)(SCREEN_W-530),(float)(SCREEN_H-38),120,30},"FORM ARMY",mouse,
+                         Color{20,50,20,255},Color{40,90,38,255})){
+                formArmyAt(g_campaign.viewedCity);
+            }
+        }
+        if(armyHere>=0&&resNonHero>0){
+            if(drawSmBtn({(float)(SCREEN_W-400),(float)(SCREEN_H-38),120,30},"JOIN ARMY",mouse,
+                         Color{20,50,20,255},Color{40,90,38,255})){
+                joinArmyAt(g_campaign.viewedCity);
+            }
+        }
+    }
     if(drawSmBtn({(float)(SCREEN_W-260),(float)(SCREEN_H-38),120,30},"RECRUIT",mouse))
         return STATE_RECRUITMENT;
     if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-38),116,30},"BACK",mouse,
@@ -1126,6 +1356,7 @@ GameState updateDrawRecruitment(Vector2 mouse){
 
     for(int t=0;t<unitTypeCount();t++){
         const UnitTypeDef& td=g_unitTypes[t];
+        if(td.recruitGold<0) continue; // Fase J: héroes (General/Rey) no se reclutan
         float ry=80.f+t*38.f;
         if(ry+38>SCREEN_H-60) break;
         bool unlocked=hasReq(td.buildingReqs);
@@ -1185,9 +1416,9 @@ GameState updateDrawRecruitment(Vector2 mouse){
         DrawText("(empty)",(int)(rx+10),(int)100,12,C_SECONDARY);
 
     DrawLine((int)rx,SCREEN_H/2,(int)SCREEN_W,SCREEN_H/2,{60,50,35,80});
-    DrawText("Ready to deploy:",(int)(rx+10),(int)(SCREEN_H/2+8),13,C_PARCHMENT);
-    for(int i=0;i<(int)g_campaign.readyUnits.size();i++){
-        auto [ti,cnt]=g_campaign.readyUnits[i];
+    DrawText("Reserve (unassigned):",(int)(rx+10),(int)(SCREEN_H/2+8),13,C_PARCHMENT);
+    for(int i=0;i<(int)g_campaign.reserve.size();i++){
+        auto [ti,cnt]=g_campaign.reserve[i];
         if(ti>=unitTypeCount()) continue;
         const UnitTypeDef& td2=g_unitTypes[ti];
         float ry=SCREEN_H/2+30.f+i*28.f;
