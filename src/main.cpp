@@ -767,7 +767,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     for(int i=0;i<(int)g_campaign.provinces.size();i++){
         auto& p=g_campaign.provinces[i];
         bool explored=(i<32&&g_campaign.explored[i]);
-        Color oc=factionColors[(int)p.owner];
+        Color oc=factionDisplayColor(p.owner); // Fase D+: aliados => color del jugador
         if(!explored) oc={40,40,40,255};
         float rad=38.f; // radio de decor/labels (la celda la dibuja el continente)
         if(explored) drawTerrainDecor(i,p.terrain,p.center,rad);
@@ -795,7 +795,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         if(!p.army.empty()&&explored){
             int total=0; for(auto [ti,c]:p.army) total+=c;
             DrawText(TextFormat("⚔%d",total),(int)(p.center.x-12),(int)(p.center.y-rad-uiPx(16.f)),11,
-                     p.owner==FACTION_PLAYER?C_ALLY:C_ENEMY_COL);
+                     factionIsPlayerSide(p.owner)?C_ALLY:C_ENEMY_COL); // Fase D+
         } else if(!p.army.empty()&&!explored){
             DrawText("?",(int)(p.center.x-4),(int)(p.center.y-rad-uiPx(16.f)),11,{80,80,80,255});
         }
@@ -827,7 +827,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         auto& p=g_campaign.provinces[i];
         float rad=38.f; // Fase C: offset de tooltip
         bool explored=(i<32&&g_campaign.explored[i]);
-        Color oc=factionColors[(int)p.owner];
+        Color oc=factionDisplayColor(p.owner); // Fase D+: aliados => color del jugador
         if(!explored) oc={40,40,40,255};
         bool hov=(mouse.y>hoverTop && mouse.y<hoverBot && pointInProvinceCell(i,mouse));
         if(hov){

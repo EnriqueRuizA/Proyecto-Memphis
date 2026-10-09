@@ -162,6 +162,61 @@ static float distSeg(Vector2 p, Vector2 a, Vector2 b){
     return sqrtf(px*px+py*py);
 }
 
+static bool edgeOnCoast(Vector2 a, Vector2 b); // definicion mas abajo
+
+// ── Fase D+: bordes irregulares (ruido posicional compartido) ───────────────
+// Hash determinista [-1,1]
+static float whash(int x,int y){
+    unsigned h=(unsigned)x*374761393u+(unsigned)y*668265263u;
+    h=(h^(h>>13))*1274126177u;
+    return (float)((h&0xFFFFu)*(2.0f/65535.0f))-1.f;
+}
+// Value noise suave y posicional: misma posicion => mismo valor, asi que
+// ambas celdas de una frontera calculan exactamente el mismo desplazamiento.
+static float wnoise(float x,float y){
+    const float SC=0.030f; // celda de ~33px => ondulacion de ~66px
+    float fx=x*SC, fy=y*SC;
+    int ix=(int)floorf(fx), iy=(int)floorf(fy);
+    float tx=fx-(float)ix, ty=fy-(float)iy;
+    tx=tx*tx*(3.f-2.f*tx); ty=ty*ty*(3.f-2.f*ty);
+    float a=whash(ix,iy), b=whash(ix+1,iy), c=whash(ix,iy+1), d=whash(ix+1,iy+1);
+    float ab=a+(b-a)*tx, cd=c+(d-c)*tx;
+    return ab+(cd-ab)*ty;
+}
+// Subdivide cada arista y desplaza sus puntos interiores en perpendicular.
+// Los extremos NO se mueven (esquinas compartidas => sin grietas) y la
+// perpendicular usa direccion canonica lexicografica para que los dos lados
+// de la frontera desplacen los puntos por igual.
+static void wobblePoly(std::vector<Vector2>& poly, float ampMax, float step, bool skipCoast){
+    int n=(int)poly.size();
+    if(n<3) return;
+    std::vector<Vector2> out;
+    out.reserve(poly.size()*4);
+    for(int i=0;i<n;i++){
+        Vector2 a=poly[i], b=poly[(i+1)%n];
+        out.push_back(a);
+        float dx=b.x-a.x, dy=b.y-a.y;
+        float len=sqrtf(dx*dx+dy*dy);
+        if(len<2.f) continue;
+        if(skipCoast && edgeOnCoast(a,b)) continue; // costa ya ondulada en g_cont
+        bool flip=(a.x>b.x)||(a.x==b.x&&a.y>b.y);
+        float ux=flip?-dx/len:dx/len, uy=flip?-dy/len:dy/len;
+        float nx=-uy, ny=ux;
+        int seg=(int)(len/step)+1;
+        if(seg<2) seg=2;
+        if(seg>24) seg=24;
+        float amp=ampMax;
+        if(len*0.16f<amp) amp=len*0.16f; // aristas cortas casi rectas (evita auto-interseccion)
+        for(int k=1;k<seg;k++){
+            float t=(float)k/(float)seg;
+            float mx=a.x+dx*t, my=a.y+dy*t;
+            float d=wnoise(mx,my)*amp;
+            out.push_back({mx+nx*d, my+ny*d});
+        }
+    }
+    poly.swap(out);
+}
+
 static bool needRebuild(int campaignId){
     if(g_cellCamp!=campaignId) return true;
     const auto& prov=g_campaign.provinces;
@@ -176,6 +231,7 @@ static bool needRebuild(int campaignId){
 static void buildCells(int campaignId){
     const auto& prov=g_campaign.provinces;
     g_cont=contOutline(campaignId);
+    wobblePoly(g_cont,9.f,18.f,false); // Fase D+: costa irregular
     g_cell.assign(prov.size(), {});
     g_cellSeed.clear();
     for(size_t i=0;i<prov.size();i++) g_cellSeed.push_back(prov[i].center);
@@ -185,6 +241,7 @@ static void buildCells(int campaignId){
             if(j==i) continue;
             clipHalfPlane(poly, prov[i].center, prov[j].center);
         }
+        wobblePoly(poly,7.f,18.f,true); // Fase D+: fronteras irregulares (costa intacta)
         g_cell[i]=poly;
     }
     g_cellCamp=campaignId;
@@ -240,11 +297,14 @@ void drawCampaignContinent(int campaignId){
         Color fill;
         if(!explored) fill=fogFill;
         else{
-            Color oc=factionColors[(int)prov[i].owner];
-            fill=terrainFill[(int)prov[i].terrain];
-            fill.r=(unsigned char)((fill.r+oc.r)/2);
-            fill.g=(unsigned char)((fill.g+oc.g)/2);
-            fill.b=(unsigned char)((fill.b+oc.b)/2);
+            // Fase D+: el color de dueno domina (0.85) => territorio propio y
+            // aliado se lee como un solo bloque; cada enemigo, su color.
+            Color oc=factionDisplayColor(prov[i].owner);
+            Color tc=terrainFill[(int)prov[i].terrain];
+            const float OW=0.85f;
+            fill.r=(unsigned char)((float)tc.r+((float)oc.r-(float)tc.r)*OW);
+            fill.g=(unsigned char)((float)tc.g+((float)oc.g-(float)tc.g)*OW);
+            fill.b=(unsigned char)((float)tc.b+((float)oc.b-(float)tc.b)*OW);
         }
         fillFan(prov[i].center, g_cell[i], fill, 0.965f);
     }
@@ -384,7 +444,7 @@ static void mcTower(float x,float gy,float s){
 void drawMiniCity(Vector2 pos,int level,FactionId owner,float time){
     float gy=pos.y+4.f;
     float s=0.95f;
-    Color fc=factionColors[(int)owner];
+    Color fc=factionDisplayColor(owner); // Fase D+: aliados => color del jugador
     // plataforma de tierra
     DrawEllipse((int)pos.x,(int)gy,14,4,{78,60,36,170});
     // L1+: aldea de cabañas

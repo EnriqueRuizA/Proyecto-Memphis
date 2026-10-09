@@ -63,6 +63,8 @@ struct CampaignState {
     std::vector<std::pair<int,int>> readyUnits;
     // 6.3: Fog of war — explored provinces
     bool             explored[32]={};   // true if province has been seen
+    // Fase D+: facciones aliadas con el jugador (persistencia en Fase I)
+    bool             allied[FACTION_COUNT]={};
     // 3.4: Stats for victory/defeat screen
     int              battlesWon=0;
     int              battlesLost=0;
@@ -87,6 +89,11 @@ struct PreBattleState {
 
 extern CampaignState  g_campaign;  // (:596)
 extern PreBattleState g_preBattle; // (:676)
+
+// Fase D+: bando del jugador en el mapa (propio + aliados = mismo color;
+// cada faccion enemiga conserva el suyo)
+bool  factionIsPlayerSide(FactionId f);
+Color factionDisplayColor(FactionId f);
 
 // (:690, :692-693)
 extern const float TRADE_RATES[5]; // gold, food, wood, stone, iron

@@ -29,6 +29,22 @@ int g_deleteConfirmIdx  = -1;  // 4.4: garrison delete confirmation
 int g_selectedProvince  = -1;  // 4.5: pulsing selected province
 
 // ───────────────────────────────────────────────────────────────────────────
+//  Fase D+: bando del jugador en el mapa
+//  Territorio propio y de facciones aliadas => mismo color (el del jugador);
+//  cada faccion enemiga conserva el suyo bien visible.
+// ───────────────────────────────────────────────────────────────────────────
+bool factionIsPlayerSide(FactionId f){
+    if(f==FACTION_PLAYER) return true;
+    if((int)f<0||(int)f>=FACTION_COUNT) return false;
+    return g_campaign.allied[(int)f];
+}
+Color factionDisplayColor(FactionId f){
+    if(factionIsPlayerSide(f)) return factionColors[FACTION_PLAYER];
+    if((int)f<0||(int)f>=FACTION_COUNT) return factionColors[FACTION_NEUTRAL];
+    return factionColors[(int)f];
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 //  GARRISON ARMIES PANEL (0.1: extracted from orphan code)
 // ───────────────────────────────────────────────────────────────────────────
 void drawGarrisonArmiesPanel(Province& prov, float gridY, float cellH, Vector2 mouse){
@@ -70,7 +86,7 @@ void drawCampaignMovementArrows(){
         Vector2 dir=vnorm(v2sub(ap.center,pp.center));
         Vector2 mid={pp.center.x+dir.x*40.f,pp.center.y+dir.y*40.f};
         // Small arrow pointing toward adjacent
-        Color arrowCol=(ap.owner==FACTION_PLAYER)?C_ALLY:C_ENEMY_COL;
+        Color arrowCol=factionIsPlayerSide(ap.owner)?C_ALLY:C_ENEMY_COL; // Fase D+
         DrawLineEx(mid,v2add(mid,v2scale(dir,24.f)),2.f,{arrowCol.r,arrowCol.g,arrowCol.b,120});
         // Arrowhead
         Vector2 tip=v2add(mid,v2scale(dir,24.f));
