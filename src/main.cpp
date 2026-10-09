@@ -2307,32 +2307,32 @@ GameState updateDrawDiplomacy(Vector2 mouse){
 
     int total=totalMilitaryPower();
 
-    // Una fila por faccion IA (1..3); el jugador y Neutral no se negocian
-    for(int k=0;k<3;k++){
+    // Una fila por faccion IA (1..4); el jugador y Neutral no se negocian
+    for(int k=0;k<4;k++){
         int f=k+1;
-        float y0=64.f+(float)k*96.f;
-        DrawRectangle(8,(int)y0,SCREEN_W-16,88,{12,10,8,200});
-        DrawRectangleLinesEx({8,y0,(float)(SCREEN_W-16),88},1,factionColors[f]);
-        DrawText(factionNames[f],20,(int)y0+8,18,factionColors[f]);
+        float y0=56.f+(float)k*88.f;
+        DrawRectangle(8,(int)y0,SCREEN_W-16,84,{12,10,8,200});
+        DrawRectangleLinesEx({8,y0,(float)(SCREEN_W-16),84},1,factionColors[f]);
+        DrawText(factionNames[f],20,(int)y0+6,17,factionColors[f]);
         DrawText(TextFormat("Military power: %d  (world: %d)",
-                 factionMilitaryPower(f),total),20,(int)y0+40,13,C_SECONDARY);
+                 factionMilitaryPower(f),total),20,(int)y0+34,12,C_SECONDARY);
         // Estado diplomatico (colores fijos por asercion de test)
         DrawText(g_campaign.allied[f]?"Mil: ALLIED":"Mil: -",
-                 340,(int)y0+10,14,g_campaign.allied[f]?DIPLO_OK_C:Color{110,110,110,255});
+                 340,(int)y0+8,13,g_campaign.allied[f]?DIPLO_OK_C:Color{110,110,110,255});
         DrawText(g_campaign.tradePact[f]?"Pact: YES":"Pact: -",
-                 340,(int)y0+38,14,g_campaign.tradePact[f]?DIPLO_PACT_C:Color{110,110,110,255});
+                 340,(int)y0+32,13,g_campaign.tradePact[f]?DIPLO_PACT_C:Color{110,110,110,255});
         // Botones: alianza militar / pacto comercial / trueque
-        if(drawSmBtn({560,y0+26,150,36},g_campaign.allied[f]?"DISSOLVE MIL":"MIL ALLIANCE",
+        if(drawSmBtn({560,y0+22,150,36},g_campaign.allied[f]?"DISSOLVE MIL":"MIL ALLIANCE",
                      mouse,{55,45,20,255},{95,75,35,255})){
             if(g_campaign.allied[f]) dissolveRelations(f,true);
             else proposeMilitaryAlliance(f);
         }
-        if(drawSmBtn({720,y0+26,150,36},g_campaign.tradePact[f]?"DISSOLVE PACT":"COMM PACT",
+        if(drawSmBtn({720,y0+22,150,36},g_campaign.tradePact[f]?"DISSOLVE PACT":"COMM PACT",
                      mouse,{25,45,65,255},{45,75,115,255})){
             if(g_campaign.tradePact[f]) dissolveRelations(f,false);
             else proposeCommercialPact(f);
         }
-        if(drawSmBtn({880,y0+26,150,36},"TRADE",mouse,
+        if(drawSmBtn({880,y0+22,150,36},"TRADE",mouse,
                      g_campaign.tradePact[f]?Color{30,55,35,255}:Color{25,25,25,255},
                      g_campaign.tradePact[f]?Color{50,95,60,255}:Color{40,40,40,255})){
             g_diploTradeFaction=f;
@@ -2340,14 +2340,14 @@ GameState updateDrawDiplomacy(Vector2 mouse){
     }
 
     // Ultimo resultado diplomatico (rect fijo para tests de pixeles)
-    DrawRectangle(8,352,SCREEN_W-16,30,{0,0,0,200});
-    DrawRectangleLinesEx({8,352,(float)(SCREEN_W-16),30},1,{80,65,30,160});
-    if(g_diploMsg[0]) DrawText(g_diploMsg,20,358,15,g_diploMsgCol);
+    DrawRectangle(8,412,SCREEN_W-16,30,{0,0,0,200});
+    DrawRectangleLinesEx({8,412,(float)(SCREEN_W-16),30},1,{80,65,30,160});
+    if(g_diploMsg[0]) DrawText(g_diploMsg,20,418,15,g_diploMsgCol);
 
     // Sub-panel de trueque (con faccion IA seleccionada)
     if(g_diploTradeFaction>=0){
         int f=g_diploTradeFaction;
-        float py=390.f;
+        float py=450.f;
         DrawRectangle(8,(int)py,SCREEN_W-16,276,{12,10,8,210});
         DrawRectangleLinesEx({8,py,(float)(SCREEN_W-16),276},1,C_GOLD);
         DrawText(TextFormat("TRADE OFFER - %s",factionNames[f]),20,(int)py+6,15,C_GOLD);
@@ -2384,7 +2384,7 @@ GameState updateDrawDiplomacy(Vector2 mouse){
 
         // Valor del trato segun la personalidad de la IA (misma tabla que
         // proposeTradeDeal en campaign.cpp)
-        static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.f};
+        static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.25f,1.f};
         float gv=(float)g_diploGiveAmt*TRADE_RATES[g_diploGiveRes];
         float rv=(float)g_diploRecvAmt*TRADE_RATES[g_diploRecvRes];
         DrawText(TextFormat("Offer %.0f pts vs ask %.0f pts required (AI factor %.2f)",
@@ -2455,12 +2455,13 @@ GameState updateDrawMainMenu(Vector2 mouse){
     if(drawButton({bx,menuTop,bw,bh},CAMPAIGN_NAMES[0],mouse)) { newCampaign(0); return STATE_CAMPAIGN_MAP; }
     if(drawButton({bx,menuTop+step,bw,bh},CAMPAIGN_NAMES[1],mouse)) { newCampaign(1); return STATE_CAMPAIGN_MAP; }
     if(drawButton({bx,menuTop+step*2.f,bw,bh},CAMPAIGN_NAMES[2],mouse)) { newCampaign(2); return STATE_CAMPAIGN_MAP; }
-    if(drawButton({bx,menuTop+step*3.f,bw,bh},"CONTINUE",mouse,
+    if(drawButton({bx,menuTop+step*3.f,bw,bh},CAMPAIGN_NAMES[3],mouse)) { newCampaign(3); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step*4.f,bw,bh},"CONTINUE",mouse,
                   g_hasSave?Color{40,55,40,255}:Color{30,30,30,255},
                   g_hasSave?Color{70,110,60,255}:Color{30,30,30,255})&&g_hasSave){
         if(loadGame()) return STATE_CAMPAIGN_MAP;
     }
-    if(drawButton({bx,menuTop+step*4.f,bw,bh},"QUICK BATTLE",mouse)){
+    if(drawButton({bx,menuTop+step*5.f,bw,bh},"QUICK BATTLE",mouse)){
         g_quickSetup.playerCounts.assign(unitTypeCount(),0);
         g_quickSetup.enemyCounts.assign(unitTypeCount(),0);
         if(unitTypeCount()>0){
@@ -2472,11 +2473,11 @@ GameState updateDrawMainMenu(Vector2 mouse){
         }
         return STATE_QUICK_BATTLE_SETUP;
     }
-    if(drawButton({bx,menuTop+step*5.f,bw,bh},"UNIT EDITOR",mouse)){
+    if(drawButton({bx,menuTop+step*6.f,bw,bh},"UNIT EDITOR",mouse)){
         return STATE_UNIT_EDITOR;
     }
-    if(drawButton({bx,menuTop+step*6.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
-    if(drawButton({bx,menuTop+step*7.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
+    if(drawButton({bx,menuTop+step*7.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
+    if(drawButton({bx,menuTop+step*8.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
         g_quitRequested=true;
     }
 

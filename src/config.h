@@ -84,7 +84,7 @@ enum BuildingType {
     BLD_WALLS1, BLD_WALLS2, BLD_MAGETOWER, BLD_TEMPLE, BLD_PORT,
     BLD_COUNT
 };
-enum FactionId { FACTION_PLAYER=0, FACTION_AGGRESSIVE, FACTION_DEFENSIVE, FACTION_COMMERCIAL, FACTION_NEUTRAL, FACTION_COUNT };
+enum FactionId { FACTION_PLAYER=0, FACTION_AGGRESSIVE, FACTION_DEFENSIVE, FACTION_COMMERCIAL, FACTION_PIRATE, FACTION_NEUTRAL, FACTION_COUNT };
 enum TerrainType { TERRAIN_PLAIN=0, TERRAIN_FOREST, TERRAIN_MOUNTAIN, TERRAIN_COAST };
 enum SoldierState { SS_IDLE=0, SS_MOVING_SLOT, SS_MOVING_TARGET, SS_ATTACKING_MELEE, SS_ATTACKING_RANGED, SS_FLEEING };
 enum UnitGroupState { UGS_IDLE=0, UGS_ADVANCING, UGS_ENGAGED, UGS_ROUTING };
@@ -116,7 +116,7 @@ void saveSettings();
 void loadSettings();
 
 // === GUARDADO ===
-inline const int SAVE_VERSION = 7;   // 7: Fase I (diplomacia: alianzas + trueque)
+inline const int SAVE_VERSION = 8;   // 8: Fase K (4a faccion + campana de 32 provincias)
 
 // === ESTADO GLOBAL (:681-684) ===
 extern GameState g_state;

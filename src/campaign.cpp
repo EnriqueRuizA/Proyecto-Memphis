@@ -448,6 +448,85 @@ void generateCampaignMap(int campaignId){
                 g_campaign.provinces[ad[1]].adjacent.push_back(ad[0]);
             }
         }
+    } else if(campaignId==3){
+        // Campaign 3: "Great Continent" — 32 provincias (rejilla 6x6 sin
+        // esquinas), 4a faccion (Sable Fleet, piratas) + 13 neutrales.
+        // Vecindad automatica: 8-conectividad de la rejilla (Chebyshev <= 1).
+        static const ProvinceTemplate tpls[]{
+            // Player (oeste-centro)
+            {"Westhold",     0.090f,0.414f, TERRAIN_PLAIN,    FACTION_PLAYER,    true,  "Westhold"},
+            {"Southwick",    0.090f,0.556f, TERRAIN_FOREST,   FACTION_PLAYER,    true,  "Southwick"},
+            {"Elmcrest",     0.252f,0.414f, TERRAIN_PLAIN,    FACTION_PLAYER,    true,  "Elmcrest"},
+            // Sable Fleet (piratas, costa oeste y sur)
+            {"Blacktide",    0.090f,0.272f, TERRAIN_COAST,    FACTION_PIRATE,    true,  "Blacktide"},
+            {"Murkwater",    0.090f,0.698f, TERRAIN_COAST,    FACTION_PIRATE,    true,  "Murkwater"},
+            {"Reefhold",     0.252f,0.698f, TERRAIN_COAST,    FACTION_PIRATE,    true,  "Reefhold"},
+            {"Corsair Bay",  0.414f,0.840f, TERRAIN_COAST,    FACTION_PIRATE,    true,  "Corsair Bay"},
+            // Iron Pact (norte)
+            {"Frostspire",   0.252f,0.150f, TERRAIN_MOUNTAIN, FACTION_AGGRESSIVE,true,  "Frostspire"},
+            {"Wolfheim",     0.414f,0.150f, TERRAIN_PLAIN,    FACTION_AGGRESSIVE,true,  "Wolfheim"},
+            {"Grimwall",     0.576f,0.150f, TERRAIN_FOREST,   FACTION_AGGRESSIVE,true,  "Grimwall"},
+            {"Redcliff",     0.414f,0.272f, TERRAIN_PLAIN,    FACTION_AGGRESSIVE,true,  "Redcliff"},
+            // Stone Realm (este montañoso)
+            {"Bastion",      0.900f,0.272f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true,  "Bastion"},
+            {"Highwall",     0.900f,0.414f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true,  "Highwall"},
+            {"Deepdelve",    0.900f,0.556f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true,  "Deepdelve"},
+            {"Rockford",     0.738f,0.556f, TERRAIN_MOUNTAIN, FACTION_DEFENSIVE, true,  "Rockford"},
+            // Trade Republic (sureste portuario)
+            {"Silverport",   0.576f,0.840f, TERRAIN_COAST,    FACTION_COMMERCIAL,true,  "Silverport"},
+            {"Emerald Quay", 0.738f,0.840f, TERRAIN_COAST,    FACTION_COMMERCIAL,true,  "Emerald Quay"},
+            {"Tradehold",    0.738f,0.698f, TERRAIN_COAST,    FACTION_COMMERCIAL,true,  "Tradehold"},
+            {"Coinford",     0.900f,0.698f, TERRAIN_COAST,    FACTION_COMMERCIAL,true,  "Coinford"},
+            // Neutrales (13)
+            {"Northwatch",   0.738f,0.170f, TERRAIN_FOREST,   FACTION_NEUTRAL,   true,  "Northwatch"},
+            {"Pinehall",     0.252f,0.272f, TERRAIN_FOREST,   FACTION_NEUTRAL,   true,  "Pinehall"},
+            {"Lakeford",     0.576f,0.272f, TERRAIN_PLAIN,    FACTION_NEUTRAL,   false, ""},
+            {"Stonecross",   0.738f,0.272f, TERRAIN_MOUNTAIN, FACTION_NEUTRAL,   false, ""},
+            {"Midborough",   0.414f,0.414f, TERRAIN_PLAIN,    FACTION_NEUTRAL,   true,  "Midborough"},
+            {"Oakden",       0.576f,0.414f, TERRAIN_FOREST,   FACTION_NEUTRAL,   true,  "Oakden"},
+            {"Ironwood",     0.738f,0.414f, TERRAIN_FOREST,   FACTION_NEUTRAL,   false, ""},
+            {"Willowmere",   0.252f,0.556f, TERRAIN_PLAIN,    FACTION_NEUTRAL,   true,  "Willowmere"},
+            {"Crosskeep",    0.414f,0.556f, TERRAIN_MOUNTAIN, FACTION_NEUTRAL,   true,  "Crosskeep"},
+            {"Duskhollow",   0.576f,0.556f, TERRAIN_FOREST,   FACTION_NEUTRAL,   true,  "Duskhollow"},
+            {"Sandgate",     0.414f,0.698f, TERRAIN_PLAIN,    FACTION_NEUTRAL,   false, ""},
+            {"Brightwell",   0.576f,0.698f, TERRAIN_PLAIN,    FACTION_NEUTRAL,   false, ""},
+            {"Tidewatch",    0.252f,0.840f, TERRAIN_COAST,    FACTION_NEUTRAL,   false, ""},
+        };
+        int n=32;
+        for(int i=0;i<n;i++){
+            const ProvinceTemplate& tp=tpls[i];
+            Province p{};
+            strncpy(p.name,tp.name,sizeof(p.name)-1); p.name[sizeof(p.name)-1]='\0';
+            p.nx=tp.nx; p.ny=tp.ny;
+            p.center={tp.nx*(float)sw, tp.ny*(float)sh};
+            p.terrain=tp.terrain; p.owner=tp.owner; p.hasCity=tp.hasCity;
+            if(tp.hasCity){
+                strncpy(p.city.name,tp.cityName,sizeof(p.city.name)-1); p.city.name[sizeof(p.city.name)-1]='\0';
+                memset(p.city.built,0,sizeof(p.city.built));
+                p.city.constructing=-1; p.city.constructTurns=0; p.city.defBonus=1.0f;
+                if(tp.owner==FACTION_PLAYER){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_AGGRESSIVE||tp.owner==FACTION_DEFENSIVE||tp.owner==FACTION_PIRATE){ p.city.built[BLD_FARM]=true; p.city.built[BLD_BARRACKS]=true; }
+                if(tp.owner==FACTION_COMMERCIAL){ p.city.built[BLD_FARM]=true; p.city.built[BLD_MARKET]=true; }
+            }
+            p.army.clear();
+            if(tp.owner==FACTION_AGGRESSIVE){ p.army.push_back({0,40}); p.army.push_back({1,30}); }
+            else if(tp.owner==FACTION_DEFENSIVE){ p.army.push_back({0,50}); p.army.push_back({4,20}); }
+            else if(tp.owner==FACTION_COMMERCIAL){ p.army.push_back({0,30}); }
+            else if(tp.owner==FACTION_PIRATE){ p.army.push_back({0,30}); p.army.push_back({4,20}); }
+            g_campaign.provinces.push_back(p);
+        }
+        // Vecindad: 8-conectividad de la rejilla (gx,gy = indices enteros)
+        auto gxi=[&](int i){ return (int)lroundf((tpls[i].nx-0.090f)/0.162f); };
+        auto gyi=[&](int i){ return (int)lroundf((tpls[i].ny-0.130f)/0.142f); };
+        for(auto& pr:g_campaign.provinces) pr.adjacent.clear();
+        for(int i=0;i<n;i++) for(int j=i+1;j<n;j++){
+            int dx=gxi(i)-gxi(j); if(dx<0) dx=-dx;
+            int dy=gyi(i)-gyi(j); if(dy<0) dy=-dy;
+            if(dx<=1&&dy<=1){
+                g_campaign.provinces[i].adjacent.push_back(j);
+                g_campaign.provinces[j].adjacent.push_back(i);
+            }
+        }
     }
 
     // Fase J: ejércitos de campo IA
@@ -892,7 +971,7 @@ void proposeTradeDeal(int f,int giveRes,float giveAmt,int recvRes,float recvAmt)
     // Personalidad de la IA: AGGRESSIVE codicioso, DEFENSIVE cauto,
     // COMMERCIAL acepta a valor justo. La IA no lleva contabilidad de
     // recursos: su contrapartida es abstracta (decide por valor+precio).
-    static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.f};
+    static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.25f,1.f};
     if(gv<rv*factor[f]){
         diploMsg(DIPLO_BAD,TextFormat("Trade rejected: offer too low (%.0f < %.0f)",
                  gv,rv*factor[f]));

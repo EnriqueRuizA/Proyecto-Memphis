@@ -8,9 +8,9 @@
 
 // (:467, :470-473)
 inline const char* terrainNames[4]={"Plain","Forest","Mountain","Coast"};
-inline const char* factionNames[FACTION_COUNT]={"The Kingdom","Iron Pact","Stone Realm","Trade Republic","Neutral"};
+inline const char* factionNames[FACTION_COUNT]={"The Kingdom","Iron Pact","Stone Realm","Trade Republic","Sable Fleet","Neutral"};
 inline const Color factionColors[FACTION_COUNT]={
-    {60,120,220,255},{220,50,50,255},{180,90,30,255},{220,200,50,255},{120,120,100,255}
+    {60,120,220,255},{220,50,50,255},{180,90,30,255},{220,200,50,255},{150,60,160,255},{120,120,100,255}
 };
 
 // (:455-461)
