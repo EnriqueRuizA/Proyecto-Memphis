@@ -84,6 +84,8 @@ struct CampaignState {
     bool             explored[32]={};   // true if province has been seen
     // Fase D+: facciones aliadas con el jugador (persistencia en Fase I)
     bool             allied[FACTION_COUNT]={};
+    // Fase I: pactos comerciales bilaterales con el jugador (con cualquier pais)
+    bool             tradePact[FACTION_COUNT]={};
     // 3.4: Stats for victory/defeat screen
     int              battlesWon=0;
     int              battlesLost=0;
@@ -120,6 +122,31 @@ extern PreBattleState g_preBattle; // (:676)
 // cada faccion enemiga conserva el suyo)
 bool  factionIsPlayerSide(FactionId f);
 Color factionDisplayColor(FactionId f);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FASE I: DIPLOMACIA (alianzas militares + pactos comerciales + trueque)
+// ═══════════════════════════════════════════════════════════════════════════
+// Modo de mapa de campana: 0 = normal (colores de bando), 1 = alianzas
+// (aliado militar = color del jugador, pacto comercial = verde, resto gris).
+// Solo cambia los colores; la logica no depende del modo.
+extern int g_mapMode;
+// Ultimo resultado de una accion diplomatica (mensaje + color para el panel)
+extern char  g_diploMsg[160];
+extern Color g_diploMsgCol;
+
+int  factionMilitaryPower(int f);   // guarniciones + ejercitos de campo + reserva
+int  totalMilitaryPower();          // potencia de todas las facciones
+int  playerBlocPower();             // jugador + sus aliados militares
+// Proponer alianza militar: una sola por jugador y bloqueada si la alianza
+// existente o la resultante alcanza el 50% de la potencia total del mundo.
+void proposeMilitaryAlliance(int f);
+// Pacto comercial: permitido con cualquier pais, sin limite.
+void proposeCommercialPact(int f);
+void dissolveRelations(int f, bool military);
+// Trueque de recursos con la IA (requiere pacto comercial; la IA acepta si
+// el valor ofrecido >= valor pedido x factor de personalidad).
+void proposeTradeDeal(int f, int giveRes, float giveAmt, int recvRes, float recvAmt);
+Color diplomacyMapColor(FactionId f);  // color de provincia segun modo de mapa
 
 // (:690, :692-693)
 extern const float TRADE_RATES[5]; // gold, food, wood, stone, iron

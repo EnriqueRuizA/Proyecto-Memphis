@@ -982,7 +982,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         auto& p=g_campaign.provinces[i];
         float rad=38.f; // Fase C: offset de tooltip
         bool explored=(i<32&&g_campaign.explored[i]);
-        Color oc=factionDisplayColor(p.owner); // Fase D+: aliados => color del jugador
+        Color oc=diplomacyMapColor(p.owner); // Fase I: modo alianzas cambia solo el color
         if(!explored) oc={40,40,40,255};
         bool hov=(mouse.y>hoverTop && mouse.y<hoverBot && pointInProvinceCell(i,mouse));
         if(hov){
@@ -1002,7 +1002,8 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             int selArmy=g_campaign.selectedArmy;
             bool armyCanAct=selArmy>=0&&selArmy<(int)g_campaign.armies.size()
                             &&!g_campaign.armies[selArmy].moved;
-            bool showOdds=isAdjHover&&!armyMoving&&p.owner!=FACTION_PLAYER
+            // Fase I: sin odds sobre provincias aliadas (ni propias)
+            bool showOdds=isAdjHover&&!armyMoving&&!factionIsPlayerSide(p.owner)
                           &&armyCanAct&&explored;
             float twW=uiPx(240.f), twH=lineH1+lineH2*(showOdds?6.f:5.f)+uiPx(8.f);
             float tx=mouse.x+10, ty=mouse.y-twH-8;
@@ -1061,8 +1062,8 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                             g_campaign.armyMoveIdx=selArmy;
                             g_campaign.armyMoveT=0.f;
                         }
-                    } else if(armyCanAct){
-                        // Initiate battle with enemy province (Fase J)
+                    } else if(armyCanAct&&!factionIsPlayerSide(p.owner)){
+                        // Fase I: no se puede atacar a un aliado militar
                         std::vector<std::pair<int,int>> eu=p.army;
                         for(auto& fa:g_campaign.armies)
                             if(fa.province==i&&fa.owner==p.owner&&fa.owner!=FACTION_PLAYER)
@@ -1099,6 +1100,20 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
     float resX=uiPx(10.f)+(float)turnW+uiPx(24.f);
     DrawText(TextFormat("Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
              r.gold,r.food,r.wood,r.stone,r.iron),(int)resX,(int)topBarY,13,C_PARCHMENT);
+
+    // Fase I: acceso a diplomacia y modo de mapa (este ultimo solo cambia
+    // colores de las provincias; la logica no depende del modo)
+    if(drawSmBtn({uiPx(660.f),uiPx(7.f),uiPx(150.f),uiPx(30.f)},"DIPLOMACY",mouse,
+                 {35,30,55,255},{60,50,95,255})){
+        g_diploMsg[0]='\0'; // sin mensaje previo al abrir el panel
+        return STATE_DIPLOMACY;
+    }
+    if(drawSmBtn({uiPx(820.f),uiPx(7.f),uiPx(170.f),uiPx(30.f)},
+                 g_mapMode?"MAP: ALLIANCES":"MAP: NORMAL",mouse,
+                 g_mapMode?Color{30,60,45,255}:Color{25,35,55,255},
+                 g_mapMode?Color{50,100,75,255}:Color{45,60,95,255})){
+        g_mapMode=(g_mapMode==0)?1:0;
+    }
 
     // Fase J: estado del ejército seleccionado (esquina superior derecha)
     if(g_campaign.selectedArmy>=0&&g_campaign.selectedArmy<(int)g_campaign.armies.size()
@@ -2263,6 +2278,138 @@ GameState updateDrawMarketplace(Vector2 mouse){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  STATE: DIPLOMACY (Fase I)
+// ═══════════════════════════════════════════════════════════════════════════
+// Estado del sub-panel de trueque (reseteado al abrir la pantalla)
+static int g_diploTradeFaction=-1; // -1 = panel de trueque cerrado
+static int g_diploGiveRes=0;       // Gold
+static int g_diploRecvRes=1;       // Food
+static int g_diploGiveAmt=300;
+static int g_diploRecvAmt=100;
+static const Color DIPLO_OK_C   ={120,220,120,255}; // estado "aliado" en filas
+static const Color DIPLO_PACT_C ={ 80,160,255,255}; // estado "pacto" en filas
+
+GameState updateDrawDiplomacy(Vector2 mouse){
+    ClearBackground(C_BG);
+    for(int gx=0;gx<SCREEN_W;gx+=40) DrawLine(gx,0,gx,SCREEN_H,{20,18,14,50});
+    for(int gy=0;gy<SCREEN_H;gy+=40) DrawLine(0,gy,SCREEN_W,gy,{20,18,14,50});
+
+    static const char* resNames[5]={"Gold","Food","Wood","Stone","Iron"};
+    static const Color resColors[5]={{200,165,80,255},{140,100,50,255},{100,150,60,255},
+                                       {160,150,140,255},{200,100,50,255}};
+
+    DrawRectangle(0,0,SCREEN_W,50,{0,0,0,220});
+    DrawText("DIPLOMACY - Alliances and Trade",14,6,26,C_GOLD);
+    Resources& res=g_campaign.res;
+    DrawText(TextFormat("Turn: %d  |  Gold: %.0f  Food: %.0f  Wood: %.0f  Stone: %.0f  Iron: %.0f",
+             g_campaign.turn,res.gold,res.food,res.wood,res.stone,res.iron),
+             14,36,12,C_SECONDARY);
+
+    int total=totalMilitaryPower();
+
+    // Una fila por faccion IA (1..3); el jugador y Neutral no se negocian
+    for(int k=0;k<3;k++){
+        int f=k+1;
+        float y0=64.f+(float)k*96.f;
+        DrawRectangle(8,(int)y0,SCREEN_W-16,88,{12,10,8,200});
+        DrawRectangleLinesEx({8,y0,(float)(SCREEN_W-16),88},1,factionColors[f]);
+        DrawText(factionNames[f],20,(int)y0+8,18,factionColors[f]);
+        DrawText(TextFormat("Military power: %d  (world: %d)",
+                 factionMilitaryPower(f),total),20,(int)y0+40,13,C_SECONDARY);
+        // Estado diplomatico (colores fijos por asercion de test)
+        DrawText(g_campaign.allied[f]?"Mil: ALLIED":"Mil: -",
+                 340,(int)y0+10,14,g_campaign.allied[f]?DIPLO_OK_C:Color{110,110,110,255});
+        DrawText(g_campaign.tradePact[f]?"Pact: YES":"Pact: -",
+                 340,(int)y0+38,14,g_campaign.tradePact[f]?DIPLO_PACT_C:Color{110,110,110,255});
+        // Botones: alianza militar / pacto comercial / trueque
+        if(drawSmBtn({560,y0+26,150,36},g_campaign.allied[f]?"DISSOLVE MIL":"MIL ALLIANCE",
+                     mouse,{55,45,20,255},{95,75,35,255})){
+            if(g_campaign.allied[f]) dissolveRelations(f,true);
+            else proposeMilitaryAlliance(f);
+        }
+        if(drawSmBtn({720,y0+26,150,36},g_campaign.tradePact[f]?"DISSOLVE PACT":"COMM PACT",
+                     mouse,{25,45,65,255},{45,75,115,255})){
+            if(g_campaign.tradePact[f]) dissolveRelations(f,false);
+            else proposeCommercialPact(f);
+        }
+        if(drawSmBtn({880,y0+26,150,36},"TRADE",mouse,
+                     g_campaign.tradePact[f]?Color{30,55,35,255}:Color{25,25,25,255},
+                     g_campaign.tradePact[f]?Color{50,95,60,255}:Color{40,40,40,255})){
+            g_diploTradeFaction=f;
+        }
+    }
+
+    // Ultimo resultado diplomatico (rect fijo para tests de pixeles)
+    DrawRectangle(8,352,SCREEN_W-16,30,{0,0,0,200});
+    DrawRectangleLinesEx({8,352,(float)(SCREEN_W-16),30},1,{80,65,30,160});
+    if(g_diploMsg[0]) DrawText(g_diploMsg,20,358,15,g_diploMsgCol);
+
+    // Sub-panel de trueque (con faccion IA seleccionada)
+    if(g_diploTradeFaction>=0){
+        int f=g_diploTradeFaction;
+        float py=390.f;
+        DrawRectangle(8,(int)py,SCREEN_W-16,276,{12,10,8,210});
+        DrawRectangleLinesEx({8,py,(float)(SCREEN_W-16),276},1,C_GOLD);
+        DrawText(TextFormat("TRADE OFFER - %s",factionNames[f]),20,(int)py+6,15,C_GOLD);
+
+        // Lo que el jugador DA
+        DrawText("YOU GIVE:",20,(int)py+34,13,C_PARCHMENT);
+        for(int i=0;i<5;i++){
+            float tx=110.f+(float)i*134.f;
+            bool sel=(g_diploGiveRes==i);
+            if(drawSmBtn({tx,py+28,128,30},resNames[i],mouse,
+                         sel?Color{60,60,30,255}:Color{30,30,20,255},
+                         sel?Color{95,95,50,255}:Color{50,50,35,255})) g_diploGiveRes=i;
+            if(sel) DrawRectangleLinesEx({tx,py+28,128,30},2,C_GOLD);
+        }
+        DrawText("Amount:",20,(int)py+72,13,C_SECONDARY);
+        if(drawSmBtn({100,py+64,36,30},"-",mouse)) g_diploGiveAmt=std::max(25,g_diploGiveAmt-25);
+        DrawText(TextFormat("%d",g_diploGiveAmt),148,(int)py+70,16,resColors[g_diploGiveRes]);
+        if(drawSmBtn({200,py+64,36,30},"+",mouse)) g_diploGiveAmt=std::min(1000,g_diploGiveAmt+25);
+
+        // Lo que el jugador PIDE
+        DrawText("YOU RECEIVE:",20,(int)py+110,13,C_PARCHMENT);
+        for(int i=0;i<5;i++){
+            float tx=110.f+(float)i*134.f;
+            bool sel=(g_diploRecvRes==i);
+            if(drawSmBtn({tx,py+104,128,30},resNames[i],mouse,
+                         sel?Color{60,60,30,255}:Color{30,30,20,255},
+                         sel?Color{95,95,50,255}:Color{50,50,35,255})) g_diploRecvRes=i;
+            if(sel) DrawRectangleLinesEx({tx,py+104,128,30},2,C_GOLD);
+        }
+        DrawText("Amount:",20,(int)py+148,13,C_SECONDARY);
+        if(drawSmBtn({100,py+140,36,30},"-",mouse)) g_diploRecvAmt=std::max(25,g_diploRecvAmt-25);
+        DrawText(TextFormat("%d",g_diploRecvAmt),148,(int)py+146,16,resColors[g_diploRecvRes]);
+        if(drawSmBtn({200,py+140,36,30},"+",mouse)) g_diploRecvAmt=std::min(1000,g_diploRecvAmt+25);
+
+        // Valor del trato segun la personalidad de la IA (misma tabla que
+        // proposeTradeDeal en campaign.cpp)
+        static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.f};
+        float gv=(float)g_diploGiveAmt*TRADE_RATES[g_diploGiveRes];
+        float rv=(float)g_diploRecvAmt*TRADE_RATES[g_diploRecvRes];
+        DrawText(TextFormat("Offer %.0f pts vs ask %.0f pts required (AI factor %.2f)",
+                 gv,rv*factor[f],factor[f]),20,(int)py+186,13,C_SECONDARY);
+
+        if(drawSmBtn({20,py+222,200,44},"OFFER DEAL",mouse,{30,70,35,255},{55,120,60,255})){
+            proposeTradeDeal(f,g_diploGiveRes,(float)g_diploGiveAmt,
+                             g_diploRecvRes,(float)g_diploRecvAmt);
+        }
+        if(drawSmBtn({240,py+222,140,44},"CLOSE",mouse,{50,25,25,255},{80,40,40,255})){
+            g_diploTradeFaction=-1;
+        }
+    }
+
+    // Bottom bar
+    DrawRectangle(0,SCREEN_H-50,SCREEN_W,50,{0,0,0,210});
+    if(drawSmBtn({(float)(SCREEN_W-130),(float)(SCREEN_H-42),116,30},"BACK",mouse,
+                  {50,25,25,255},{80,40,40,255})){
+        g_diploTradeFaction=-1;
+        return STATE_CAMPAIGN_MAP;
+    }
+    return STATE_DIPLOMACY;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  STATE: MAIN MENU
 // ═══════════════════════════════════════════════════════════════════════════
 GameState updateDrawMainMenu(Vector2 mouse){
@@ -2512,6 +2659,9 @@ int main(){
                 break;
             case STATE_MARKETPLACE:
                 g_state=updateDrawMarketplace(mouse);
+                break;
+            case STATE_DIPLOMACY:
+                g_state=updateDrawDiplomacy(mouse);
                 break;
         }
         // 4.9: Global FPS (shown in non-battle states too)

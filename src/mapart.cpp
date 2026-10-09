@@ -299,7 +299,9 @@ void drawCampaignContinent(int campaignId){
         else{
             // Fase D+: el color de dueno domina (0.85) => territorio propio y
             // aliado se lee como un solo bloque; cada enemigo, su color.
-            Color oc=factionDisplayColor(prov[i].owner);
+            // Fase I: en modo alianzas solo cambian los colores (aliado =
+            // color del jugador, pacto = verde, sin relacion = gris).
+            Color oc=diplomacyMapColor(prov[i].owner);
             Color tc=terrainFill[(int)prov[i].terrain];
             const float OW=0.85f;
             fill.r=(unsigned char)((float)tc.r+((float)oc.r-(float)tc.r)*OW);
@@ -444,7 +446,7 @@ static void mcTower(float x,float gy,float s){
 void drawMiniCity(Vector2 pos,int level,FactionId owner,float time){
     float gy=pos.y+4.f;
     float s=0.95f;
-    Color fc=factionDisplayColor(owner); // Fase D+: aliados => color del jugador
+    Color fc=diplomacyMapColor(owner); // Fase I: modo alianzas cambia solo el color
     // plataforma de tierra
     DrawEllipse((int)pos.x,(int)gy,14,4,{78,60,36,170});
     // L1+: aldea de cabañas

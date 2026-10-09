@@ -111,6 +111,10 @@ void saveGame(){
         fwrite(&r.second,sizeof(int),1,f);
     }
 
+    // Fase I: diplomacia — alianzas militares + pactos comerciales
+    fwrite(g_campaign.allied,sizeof(bool),FACTION_COUNT,f);
+    fwrite(g_campaign.tradePact,sizeof(bool),FACTION_COUNT,f);
+
     fclose(f);
     g_hasSave=true;
     // Remember last played campaign for Continue
@@ -232,6 +236,10 @@ bool loadGame(){
         if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
         g_campaign.reserve.push_back({ti,cnt});
     }
+
+    // Fase I: diplomacia — alianzas militares + pactos comerciales
+    if(fread(g_campaign.allied,sizeof(bool),FACTION_COUNT,f)!=FACTION_COUNT){ fclose(f); return false; }
+    if(fread(g_campaign.tradePact,sizeof(bool),FACTION_COUNT,f)!=FACTION_COUNT){ fclose(f); return false; }
 
     fclose(f);
     updateProvinceCenters();

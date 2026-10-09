@@ -613,7 +613,9 @@ bool processTurn(){
     std::vector<int> coalitionAttackers;
     for(int pi2=0;pi2<(int)g_campaign.provinces.size();pi2++){
         Province& ep2=g_campaign.provinces[pi2];
-        if(ep2.owner==FACTION_NEUTRAL||ep2.owner==FACTION_PLAYER) continue;
+        // Fase I: aliados militares del jugador no coalicionan contra el jugador
+        if(ep2.owner==FACTION_NEUTRAL||ep2.owner==FACTION_PLAYER
+           ||factionIsPlayerSide(ep2.owner)) continue;
         bool adjPlayer=false;
         for(int adj2:ep2.adjacent) if(g_campaign.provinces[adj2].owner==FACTION_PLAYER) adjPlayer=true;
         if(!adjPlayer) continue;
@@ -668,7 +670,8 @@ bool processTurn(){
     int np=(int)g_campaign.provinces.size();
     for(int ai=0;ai<(int)g_campaign.armies.size()&&!battlePending;ai++){
         FieldArmy& a=g_campaign.armies[ai];
-        if(a.owner==FACTION_PLAYER||a.owner==FACTION_NEUTRAL) continue;
+        // Fase I: ni el jugador ni sus aliados militares marchan contra el jugador
+        if(factionIsPlayerSide(a.owner)||a.owner==FACTION_NEUTRAL) continue;
         a.moved=false;
         if(a.province<0||a.province>=np) continue;
 
@@ -752,3 +755,161 @@ bool processTurn(){
 const float TRADE_RATES[5]={1.f, 1.2f, 1.3f, 1.5f, 0.8f}; // gold, food, wood, stone, iron
 int g_tradeTab=0; // 0-4 for each resource
 int g_tradeAmount=10; // amount to buy/sell
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FASE I: DIPLOMACIA (alianzas militares + pactos comerciales + trueque)
+// ═══════════════════════════════════════════════════════════════════════════
+
+int g_mapMode=0; // 0 = modo normal, 1 = modo alianzas (solo cambia colores)
+char g_diploMsg[160]={0};
+Color g_diploMsgCol={200,165,80,255};
+
+static const Color DIPLO_OK  ={120,220,120,255};
+static const Color DIPLO_BAD ={230, 90, 90,255};
+static const Color DIPLO_WARN={230,160, 60,255};
+// Colores del modo de mapa alianzas (solo provincias; la UI no cambia)
+static const Color DIPLO_TRADE_COL={50,200,120,255}; // pacto comercial
+static const Color DIPLO_NONE_COL ={85, 85, 90,255}; // sin relacion
+
+static void diploMsg(Color col,const char* text){
+    strncpy(g_diploMsg,text,sizeof(g_diploMsg)-1);
+    g_diploMsg[sizeof(g_diploMsg)-1]='\0';
+    g_diploMsgCol=col;
+}
+
+int factionMilitaryPower(int f){
+    if(f<0||f>=FACTION_COUNT) return 0;
+    int s=0;
+    for(const auto& p:g_campaign.provinces)
+        if((int)p.owner==f) for(const auto& g:p.army) s+=g.second;
+    for(const auto& a:g_campaign.armies)
+        if((int)a.owner==f) s+=armySoldiers(a.units);
+    if(f==FACTION_PLAYER) // la reserva solo existe para el jugador
+        for(const auto& r:g_campaign.reserve) s+=r.second;
+    return s;
+}
+
+int totalMilitaryPower(){
+    int t=0;
+    for(int f=0;f<FACTION_COUNT;f++) t+=factionMilitaryPower(f);
+    return t;
+}
+
+int playerBlocPower(){
+    int p=factionMilitaryPower(FACTION_PLAYER);
+    for(int f=0;f<FACTION_COUNT;f++) if(g_campaign.allied[f]) p+=factionMilitaryPower(f);
+    return p;
+}
+
+void proposeMilitaryAlliance(int f){
+    if(f==FACTION_PLAYER||f==FACTION_NEUTRAL||f<0||f>=FACTION_COUNT){
+        diploMsg(DIPLO_BAD,"Cannot form an alliance with this faction");
+        return;
+    }
+    if(g_campaign.allied[f]){
+        diploMsg(DIPLO_BAD,TextFormat("Already allied with %s",factionNames[f]));
+        return;
+    }
+    // Regla: cada jugador solo puede pertenecer a UNA alianza militar
+    for(int k=0;k<FACTION_COUNT;k++){
+        if(g_campaign.allied[k]){
+            diploMsg(DIPLO_BAD,"Rejected: one military alliance only");
+            return;
+        }
+    }
+    int target=factionMilitaryPower(f);
+    int total=totalMilitaryPower();
+    if(total<=0) return;
+    // Regla del 50%: ni la alianza existente que se quiere unir ni la
+    // alianza resultante (jugador + aliados + objetivo) pueden alcanzar el
+    // 50% de la potencia militar total del mundo.
+    if(target*2>=total){
+        diploMsg(DIPLO_WARN,TextFormat(
+            "Rejected: %s alone holds %d%% of world military power (max 50%%)",
+            factionNames[f],(int)((long long)target*100/total)));
+        return;
+    }
+    int bloc=playerBlocPower()+target;
+    if(bloc*2>=total){
+        diploMsg(DIPLO_WARN,TextFormat(
+            "Rejected: alliance would hold %d%% of world military power (max 50%%)",
+            (int)((long long)bloc*100/total)));
+        return;
+    }
+    g_campaign.allied[f]=true;
+    battleLogAdd(TextFormat("[Diplomacy] Military alliance formed with %s",factionNames[f]));
+    diploMsg(DIPLO_OK,TextFormat("Alliance formed with %s",factionNames[f]));
+}
+
+void proposeCommercialPact(int f){
+    if(f==FACTION_PLAYER||f==FACTION_NEUTRAL||f<0||f>=FACTION_COUNT){
+        diploMsg(DIPLO_BAD,"No one to sign a pact with");
+        return;
+    }
+    if(g_campaign.tradePact[f]){
+        diploMsg(DIPLO_BAD,TextFormat("Already has a commercial pact with %s",factionNames[f]));
+        return;
+    }
+    // Pacto comercial: permitido con cualquier pais (sin limite de numero)
+    g_campaign.tradePact[f]=true;
+    battleLogAdd(TextFormat("[Diplomacy] Commercial pact signed with %s",factionNames[f]));
+    diploMsg(DIPLO_OK,TextFormat("Commercial pact signed with %s",factionNames[f]));
+}
+
+void dissolveRelations(int f,bool military){
+    if(f<0||f>=FACTION_COUNT) return;
+    if(military){
+        if(!g_campaign.allied[f]){ diploMsg(DIPLO_BAD,"No alliance to dissolve"); return; }
+        g_campaign.allied[f]=false;
+        diploMsg(DIPLO_OK,TextFormat("Alliance dissolved with %s",factionNames[f]));
+    } else {
+        if(!g_campaign.tradePact[f]){ diploMsg(DIPLO_BAD,"No pact to dissolve"); return; }
+        g_campaign.tradePact[f]=false;
+        diploMsg(DIPLO_OK,TextFormat("Commercial pact dissolved with %s",factionNames[f]));
+    }
+}
+
+void proposeTradeDeal(int f,int giveRes,float giveAmt,int recvRes,float recvAmt){
+    if(f<0||f>=FACTION_COUNT||giveRes<0||giveRes>4||recvRes<0||recvRes>4) return;
+    if(!g_campaign.tradePact[f]){
+        diploMsg(DIPLO_BAD,TextFormat("Trade rejected: sign a commercial pact with %s first",
+                 factionNames[f]));
+        return;
+    }
+    if(giveAmt<=0.f||recvAmt<=0.f){
+        diploMsg(DIPLO_BAD,"Trade rejected: amounts must be positive");
+        return;
+    }
+    float* giveVal[5]={&g_campaign.res.gold,&g_campaign.res.food,&g_campaign.res.wood,
+                       &g_campaign.res.stone,&g_campaign.res.iron};
+    static const char* rn[5]={"Gold","Food","Wood","Stone","Iron"};
+    if(*giveVal[giveRes]<giveAmt){
+        diploMsg(DIPLO_BAD,TextFormat("Trade rejected: not enough %s",rn[giveRes]));
+        return;
+    }
+    float gv=giveAmt*TRADE_RATES[giveRes];
+    float rv=recvAmt*TRADE_RATES[recvRes];
+    // Personalidad de la IA: AGGRESSIVE codicioso, DEFENSIVE cauto,
+    // COMMERCIAL acepta a valor justo. La IA no lleva contabilidad de
+    // recursos: su contrapartida es abstracta (decide por valor+precio).
+    static const float factor[FACTION_COUNT]={1.f,1.3f,1.15f,1.f,1.f};
+    if(gv<rv*factor[f]){
+        diploMsg(DIPLO_BAD,TextFormat("Trade rejected: offer too low (%.0f < %.0f)",
+                 gv,rv*factor[f]));
+        return;
+    }
+    *giveVal[giveRes]-=giveAmt;
+    *giveVal[recvRes]+=recvAmt;
+    battleLogAdd(TextFormat("[Diplomacy] Traded %d %s for %d %s with %s",
+                 (int)giveAmt,rn[giveRes],(int)recvAmt,rn[recvRes],factionNames[f]));
+    diploMsg(DIPLO_OK,TextFormat("Trade accepted: -%d %s, +%d %s",
+                 (int)giveAmt,rn[giveRes],(int)recvAmt,rn[recvRes]));
+}
+
+Color diplomacyMapColor(FactionId f){
+    if(g_mapMode!=1) return factionDisplayColor(f); // modo normal: sin cambios
+    if(factionIsPlayerSide(f)) return factionDisplayColor(f); // yo + aliados militares
+    if((int)f>=0&&(int)f<FACTION_COUNT&&g_campaign.tradePact[f])
+        return DIPLO_TRADE_COL;   // pacto comercial
+    return DIPLO_NONE_COL;        // sin relacion diplomatica
+}

@@ -47,7 +47,8 @@ enum GameState {
     STATE_QUICK_BATTLE_SETUP,
     STATE_VICTORY,
     STATE_DEFEAT,
-    STATE_MARKETPLACE      // 6.5: resource trading
+    STATE_MARKETPLACE,     // 6.5: resource trading
+    STATE_DIPLOMACY        // Fase I: alianzas + trueque con facciones IA
 };
 
 // Some screens (unit lists, dense tables) have fixed row heights. To avoid
@@ -60,6 +61,7 @@ inline float effectiveUiScale(GameState st, float requested){
         case STATE_CITY_MANAGEMENT:
         case STATE_RECRUITMENT:
         case STATE_MARKETPLACE:
+        case STATE_DIPLOMACY:
         case STATE_UNIT_CODEX:
             maxS=2.0f; break;
         // Combat/campaign HUD mixes world + UI; keep it readable but safe
@@ -114,7 +116,7 @@ void saveSettings();
 void loadSettings();
 
 // === GUARDADO ===
-inline const int SAVE_VERSION = 6;   // 6: Fase J (ejércitos de campo + reserva)
+inline const int SAVE_VERSION = 7;   // 7: Fase I (diplomacia: alianzas + trueque)
 
 // === ESTADO GLOBAL (:681-684) ===
 extern GameState g_state;
