@@ -1193,15 +1193,19 @@ mínimo entre host y cliente:
   edición; las envía como comandos.
 - **Limitaciones documentadas**: co-op reino compartido (sin dos reinos
   separados); defensas IA las resuelve el host; acciones no sincronizadas
-  se sobreescriben con el siguiente snapshot; 1 `NetSession`/proceso; UDP
-  asumido sin pérdida en loopback. **`missPong` implementado**: el cliente
-  detecta el cierre del host sin `BYE` tras ~10 s sin PONG (600 ticks a
-  ~60 fps) y pone `connected=false` con mensaje "Host lost". **`INADDR_ANY`
-  implementado**: el socket del host se liga a todas las interfaces (no
-  solo loopback), lo que permite juego en red real; el cliente puede unirse
-  por IP LAN/WAN. **Checks victoria/derrota del cliente implementados**:
-  al aplicar un snapshot, el cliente cuenta sus provincias y entra en
-  `STATE_VICTORY` (≥80%) o `STATE_DEFEAT` (0), mismo umbral que el host.
+  se sobreescriben con el siguiente snapshot; 1 `NetSession`/proceso.
+  **`missPong` implementado**: el cliente detecta el cierre del host sin
+  `BYE` tras ~10 s sin PONG (600 ticks a ~60 fps) y pone
+  `connected=false` con mensaje "Host lost". **`INADDR_ANY` implementado**:
+  el socket del host se liga a todas las interfaces (no solo loopback), lo
+  que permite juego en red real; el cliente puede unirse por IP LAN/WAN.
+  **Checks victoria/derrota del cliente implementados**: al aplicar un
+  snapshot, el cliente cuenta sus provincias y entra en `STATE_VICTORY`
+  (≥80%) o `STATE_DEFEAT` (0), mismo umbral que el host. **Fiabilidad CMD
+  implementada**: el host envía `NET_MSG_ACK` (eco del seq) al recibir un
+  comando; el cliente guarda el comando pendiente y lo retransmite cada
+  ~1 s (max 5 intentos) si no llega ACK; el host deduplica por seq (ip:port
+  + lastSeq) para no aplicar reenvíos dos veces.
 - `runSyncTest` vive en `src/sync_test.cpp` (incluye `campaign.h`/`raylib.h`,
   sin winsock; usa `std::this_thread::sleep_for`) para evitar el choque
   raylib.h vs windows.h. `-nettest` ampliado: `rc4=runSyncTest()`, exit 0

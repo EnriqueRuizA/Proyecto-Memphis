@@ -46,7 +46,8 @@ enum NetMsgType : unsigned char {
     NET_MSG_PONG    = 5,  // respuesta a PING
     NET_MSG_BYE     = 6,  // cierre ordenado
     NET_MSG_SNAPSHOT= 7,  // Fase H: host -> clientes, trozo de snapshot de campana
-    NET_MSG_CMD     = 8   // Fase H: cliente -> host, comando de juego
+    NET_MSG_CMD     = 8,  // Fase H: cliente -> host, comando de juego
+    NET_MSG_ACK     = 9   // host -> cliente: ack de CMD (payload: eco del seq)
 };
 
 #pragma pack(push,1)
@@ -160,6 +161,12 @@ struct NetSession {
     uint32_t snapSize     = 0;
     uint32_t snapRecv     = 0;
     bool    needSnapshot  = false;   // host: nuevo cliente registrado -> enviar snapshot
+    // Fiabilidad de CMD (ack + retransmision): el cliente guarda el ultimo
+    // comando enviado y lo reenvia si no llega ACK en ~1 s (60 ticks).
+    NetCmd  pendingCmd;
+    uint16_t pendingCmdSeq= 0;       // seq del comando pendiente (0 = ninguno)
+    int     pendingCmdTick= 0;       // tick en que se envio por ultima vez
+    int     pendingCmdTry = 0;       // intentos de envio (max 5)
 };
 extern NetSession g_netSession;
 

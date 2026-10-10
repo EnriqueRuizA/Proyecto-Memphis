@@ -651,14 +651,29 @@ void netSessionPoll(){
                 S.playerCount=cnt;
                 snprintf(S.status,sizeof S.status,"Hosting on :%d (%d players)",NET_PORT,S.playerCount);
             }else if(r.type==NET_MSG_CMD){
-                // Fase H: comando de juego del cliente -> cola local
-                if(S.cmdCount<(int)(sizeof S.cmdQueue/sizeof S.cmdQueue[0])){
+                // Fiabilidad: deduplicar por seq (el cliente puede retransmitir
+                // si no llego el ACK). Buscar el slot del cliente por ip:port.
+                NetHostClient* slot=nullptr;
+                for(auto& c : g_hostClients){
+                    if(c.used&&c.port==srcPort&&strncmp(c.ip,srcIp,NET_NAME_LEN)==0){ slot=&c; break; }
+                }
+                bool dup=(slot&&r.seq==slot->lastSeq);
+                if(slot) slot->lastSeq=r.seq;
+                // Fase H: comando de juego del cliente -> cola local (si no es dup)
+                if(!dup&&S.cmdCount<(int)(sizeof S.cmdQueue/sizeof S.cmdQueue[0])){
                     NetCmd& c=S.cmdQueue[S.cmdCount++];
                     c.cmd=(unsigned char)r.payload[0];
                     memcpy(&c.a,r.payload+1,4);
                     memcpy(&c.b,r.payload+5,4);
                     memcpy(&c.c,r.payload+9,4);
                 }
+                // Fiabilidad: ACK siempre (aunque sea dup; el cliente puede
+                // haber perdido el ACK original).
+                NetMsg ack={};
+                ack.type=NET_MSG_ACK;
+                ack.seq=++S.seq;
+                memcpy(ack.payload,&r.seq,2);
+                netSendMsg(S.sock,srcIp,srcPort,ack);
             }
         }else if(S.role==NET_ROLE_CLIENT){
             if(r.type==NET_MSG_WELCOME&&!S.connected){
@@ -671,6 +686,14 @@ void netSessionPoll(){
                 S.connected=false;
             }else if(r.type==NET_MSG_PONG){
                 S.lastPongTick=S.pollTick; // keepalive OK
+            }else if(r.type==NET_MSG_ACK){
+                // Fiabilidad: el host confirmo un CMD; si coincide con el
+                // pendiente, limpiar (ya no hace falta retransmitir).
+                uint16_t ackSeq=0; memcpy(&ackSeq,r.payload,2);
+                if(S.pendingCmdSeq!=0&&ackSeq==S.pendingCmdSeq){
+                    S.pendingCmdSeq=0;
+                    S.pendingCmdTry=0;
+                }
             }
         }
     }
@@ -700,6 +723,25 @@ void netSessionPoll(){
                 snprintf(S.status,sizeof S.status,"Host lost (no answer from %s)",S.peerIp);
             }
         }
+        // Fiabilidad CMD: retransmitir comando pendiente si no llego ACK
+        // en ~1 s (60 ticks). Max 5 intentos; despues se descarta.
+        if(S.pendingCmdSeq!=0&&S.pollTick-S.pendingCmdTick>=60){
+            if(S.pendingCmdTry<5){
+                NetMsg m={};
+                m.type=NET_MSG_CMD;
+                m.seq=S.pendingCmdSeq; // misma seq (el host deduplica por seq)
+                m.payload[0]=(char)S.pendingCmd.cmd;
+                memcpy(m.payload+1,&S.pendingCmd.a,4);
+                memcpy(m.payload+5,&S.pendingCmd.b,4);
+                memcpy(m.payload+9,&S.pendingCmd.c,4);
+                netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
+                S.pendingCmdTick=S.pollTick;
+                S.pendingCmdTry++;
+            }else{
+                S.pendingCmdSeq=0; // agotado; descartar
+                S.pendingCmdTry=0;
+            }
+        }
     }
 }
 
@@ -715,6 +757,11 @@ bool netSessionSendCmd(const NetCmd& c){
     memcpy(m.payload+1,&c.a,4);
     memcpy(m.payload+5,&c.b,4);
     memcpy(m.payload+9,&c.c,4);
+    // Fiabilidad: guardar como pendiente para retransmitir si no hay ACK
+    S.pendingCmd=c;
+    S.pendingCmdSeq=m.seq;
+    S.pendingCmdTick=S.pollTick;
+    S.pendingCmdTry=1;
     return netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
 }
 
