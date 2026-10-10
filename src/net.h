@@ -96,7 +96,8 @@ enum NetCmdType : unsigned char {
     NET_CMD_MOVE_ARMY = 2,  // a=from, b=to, c=armyIdx (o -1 = playerProvince)
     NET_CMD_RECRUIT   = 3,  // a=provinceIdx, b=typeIdx
     NET_CMD_DISBAND   = 4,  // a=armyIdx
-    NET_CMD_SYNC_REQ  = 5   // cliente pide snapshot completo
+    NET_CMD_SYNC_REQ  = 5,  // cliente pide snapshot completo
+    NET_CMD_ATTACK    = 6   // H2: a=targetProvince, b=armyIdx (host entra en PRE_BATTLE)
 };
 
 struct NetCmd {

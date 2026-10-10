@@ -142,6 +142,41 @@ static void netHostApplyCmd(const NetCmd& c){
         }
         break;
     }
+    case NET_CMD_ATTACK:{ // H2: host entra en PRE_BATTLE y resuelve la batalla
+        if(g_state!=STATE_CAMPAIGN_MAP) break; // host ocupado
+        int to=c.a, mi=c.b;
+        if(to<0||to>=(int)g_campaign.provinces.size()) break;
+        if(mi<0||mi>=(int)g_campaign.armies.size()) break;
+        if(g_campaign.armies[mi].owner!=FACTION_PLAYER) break;
+        if(g_campaign.armies[mi].moved) break; // ya movido este turno
+        Province& p=g_campaign.provinces[to];
+        if(factionIsPlayerSide(p.owner)) break; // no atacar aliado/propio
+        // adyacencia: provincia del ejército -> objetivo
+        int from=g_campaign.armies[mi].province;
+        bool adj=false; for(int a:g_campaign.provinces[from].adjacent) if(a==to) adj=true;
+        if(!adj) break;
+        selectArmy(mi); // readyUnits = vista del ejército atacante
+        // unidades enemigas = guarnición + ejércitos de campo de la facción
+        std::vector<std::pair<int,int>> eu=p.army;
+        for(auto& fa:g_campaign.armies)
+            if(fa.province==to&&fa.owner==p.owner&&fa.owner!=FACTION_PLAYER)
+                for(auto& u:fa.units) eu.push_back(u);
+        g_preBattle.provinceIdx=to;
+        g_preBattle.isDefense=false;
+        g_preBattle.fogOfWar=(p.owner!=FACTION_NEUTRAL);
+        g_preBattle.estimatedEnemyStrength=armySoldiers(eu)+(int)((frandMT()-0.5f)*20);
+        g_preBattle.attackerFaction=-1;
+        g_preBattle.attackerArmyIdx=-1;
+        g_preBattle.armyIdx=mi;
+        g_preBattle.hadKing=armyHasKing(g_campaign.armies[mi].units);
+        g_preBattle.enemyUnits=eu;
+        g_preBattle.include.clear();
+        g_preBattle.include.resize(g_campaign.readyUnits.size(),false);
+        for(int j=0;j<std::min((int)g_preBattle.include.size(),12);j++)
+            g_preBattle.include[j]=true;
+        g_state=STATE_PRE_BATTLE; // el host resuelve (auto-resolve o batalla real)
+        break;
+    }
     case NET_CMD_SYNC_REQ: g_netDirty=true; break;
     }
 }
@@ -1193,8 +1228,14 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                                 g_campaign.armyMoveT=0.f;
                             }
                         }
-                    } else if(armyCanAct&&!factionIsPlayerSide(p.owner)&&netCanEdit()){
+                    } else if(armyCanAct&&!factionIsPlayerSide(p.owner)){
                         // Fase I: no se puede atacar a un aliado militar
+                        if(netIsClient()){
+                            // H2: el cliente pide el ataque al host
+                            NetCmd ac; ac.cmd=NET_CMD_ATTACK;
+                            ac.a=i; ac.b=selArmy; ac.c=0;
+                            netSessionSendCmd(ac);
+                        } else {
                         std::vector<std::pair<int,int>> eu=p.army;
                         for(auto& fa:g_campaign.armies)
                             if(fa.province==i&&fa.owner==p.owner&&fa.owner!=FACTION_PLAYER)
@@ -1214,6 +1255,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                         for(int j=0;j<std::min((int)g_preBattle.include.size(),12);j++)
                             g_preBattle.include[j]=true;
                         return STATE_PRE_BATTLE;
+                        }
                     }
                 }
             }

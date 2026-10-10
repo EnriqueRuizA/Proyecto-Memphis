@@ -1177,15 +1177,22 @@ mínimo entre host y cliente:
   `serializeCampaignState`/`deserializeCampaignState` refactorizados en
   `save.cpp`; `saveGame`/`loadGame` son wrappers byte-idénticos.
 - **Comandos** (`NET_MSG_CMD`, cliente → host): `END_TURN`, `MOVE_ARMY`
-  (propias), `RECRUIT`, `DISBAND`, `SYNC_REQ`. El host valida y aplica;
-  si el estado cambió, retransmite snapshot a todos los clientes.
+  (propias), `RECRUIT`, `DISBAND`, `SYNC_REQ`, **`ATTACK`** (H2). El host
+  valida y aplica; si el estado cambió, retransmite snapshot a todos los
+  clientes.
+- **H2 — ataques co-op**: el cliente que desea atacar envía
+  `NET_CMD_ATTACK` (a=provincia objetivo, b=índice de ejército). El host
+  valida (adyacencia, no aliado/propio, ejército sin mover), selecciona el
+  ejército, arma `g_preBattle` con la guarnición + ejércitos de campo
+  enemigos y entra en `STATE_PRE_BATTLE`. **El host resuelve la batalla**
+  (auto-resolve o batalla real); el resultado se retransmite vía snapshot.
+  El cliente permanece en el mapa y aplica el resultado cuando llega.
 - **Integración** (`main.cpp`): helpers `netIsClient`/`netIsHost`/
   `netMarkDirty`/`netCanEdit`/`netHostApplyCmd`/`netSyncPump` (1×/frame en
   el main loop). El cliente no muta recursos/localmente en acciones de
   edición; las envía como comandos.
-- **Limitaciones documentadas** (H2 pendiente): co-op reino compartido
-  (sin dos reinos separados); solo 4 tipos de comandos (ataques/batallas
-  co-op pendientes); defensas IA las resuelve el host; cliente sin checks
+- **Limitaciones documentadas**: co-op reino compartido (sin dos reinos
+  separados); defensas IA las resuelve el host; cliente sin checks
   victoria/derrota locales; acciones no sincronizadas se sobreescriben con
   el siguiente snapshot; loopback only; 1 `NetSession`/proceso; UDP
   asumido sin pérdida en loopback; el cliente no detecta cierre de host

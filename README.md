@@ -66,19 +66,23 @@ procedurales originales (fallback automático).
   IP, estado de conexión.
 - **Fase H — sincronización de campaña (host autoritativo co-op)**:
   - Host mantiene la única copia de `CampaignState`; los clientes envían
-    comandos (`END_TURN`, `MOVE_ARMY`, `RECRUIT`, `DISBAND`) y aplican
-    snapshots troceados (`NET_MSG_SNAPSHOT`, chunk 1024 B, tope 256 KiB).
+    comandos (`END_TURN`, `MOVE_ARMY`, `RECRUIT`, `DISBAND`, `ATTACK`) y
+    aplican snapshots troceados (`NET_MSG_SNAPSHOT`, chunk 1024 B, tope
+    256 KiB).
   - El snapshot usa el mismo formato binario `SAVE_VERSION=8` que `saveGame`.
   - `netSyncPump()` en el main loop drena comandos y retransmite si el
     estado cambió.
-  - **Limitaciones**: co-op reino compartido (sin dos reinos); solo 4 tipos
-    de comandos (ataques/batallas co-op pendientes H2); defensas IA las
-    resuelve el host; cliente sin checks victoria/derrota locales; acciones
-    no sincronizadas se sobreescriben con el siguiente snapshot; loopback
-    only; 1 `NetSession`/proceso; UDP asumido sin pérdida; cliente no
-    detecta cierre de host sin `BYE`.
-- Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización ✅.
-  Detalle en `PLAN.md` §12.
+  - **H2 — ataques co-op**: el cliente envía `NET_CMD_ATTACK`; el host
+    valida (adyacencia, no aliado, ejército sin mover), entra en
+    PRE_BATTLE y resuelve la batalla; el resultado se retransmite vía
+    snapshot.
+  - **Limitaciones**: co-op reino compartido (sin dos reinos); defensas IA
+    las resuelve el host; cliente sin checks victoria/derrota locales;
+    acciones no sincronizadas se sobreescriben con el siguiente snapshot;
+    loopback only; 1 `NetSession`/proceso; UDP asumido sin pérdida;
+    cliente no detecta cierre de host sin `BYE`.
+- Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización ✅
+  (incluye H2 ataques). Detalle en `PLAN.md` §12.
 
 ## Tests
 
