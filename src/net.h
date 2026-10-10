@@ -151,6 +151,7 @@ struct NetSession {
     int     lastMsgType   = 0;       // ultimo NetMsgType recibido (0=nada)
     int     pollTick      = 0;       // ticks de poll (reintentos/keepalive)
     int     joinTries     = 0;       // reenvios de JOIN (max 5)
+    int     lastPongTick  = 0;       // cliente: tick del ultimo PONG/mensaje del host
     // Fase H: cola de comandos recibidos (host) y snapshot recibido (cliente)
     NetCmd  cmdQueue[32];
     int     cmdCount      = 0;

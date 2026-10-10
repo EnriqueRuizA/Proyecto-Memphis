@@ -664,12 +664,13 @@ void netSessionPoll(){
             if(r.type==NET_MSG_WELCOME&&!S.connected){
                 S.connected=true;
                 S.playerCount=2;
+                S.lastPongTick=S.pollTick; // missPong: reiniciar contador
                 snprintf(S.status,sizeof S.status,"Connected to %s (v%d)",S.peerIp,(int)NET_PROTO_VERSION);
             }else if(r.type==NET_MSG_REJECT){
                 snprintf(S.status,sizeof S.status,"Rejected: %.60s",r.payload);
                 S.connected=false;
             }else if(r.type==NET_MSG_PONG){
-                // keepalive OK; nada que hacer por ahora
+                S.lastPongTick=S.pollTick; // keepalive OK
             }
         }
     }
@@ -693,6 +694,11 @@ void netSessionPoll(){
             m.type=NET_MSG_PING;
             m.seq=++S.seq;
             netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
+            // missPong: si llevamos ~10 s sin PONG, el host cerro sin BYE
+            if(S.pollTick-S.lastPongTick>=600){
+                S.connected=false;
+                snprintf(S.status,sizeof S.status,"Host lost (no answer from %s)",S.peerIp);
+            }
         }
     }
 }

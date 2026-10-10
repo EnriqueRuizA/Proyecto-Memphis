@@ -1195,8 +1195,9 @@ mínimo entre host y cliente:
   separados); defensas IA las resuelve el host; cliente sin checks
   victoria/derrota locales; acciones no sincronizadas se sobreescriben con
   el siguiente snapshot; loopback only; 1 `NetSession`/proceso; UDP
-  asumido sin pérdida en loopback; el cliente no detecta cierre de host
-  sin `BYE` (`missPong` no implementado).
+  asumido sin pérdida en loopback. **`missPong` implementado**: el cliente
+  detecta el cierre del host sin `BYE` tras ~10 s sin PONG (600 ticks a
+  ~60 fps) y pone `connected=false` con mensaje "Host lost".
 - `runSyncTest` vive en `src/sync_test.cpp` (incluye `campaign.h`/`raylib.h`,
   sin winsock; usa `std::this_thread::sleep_for`) para evitar el choque
   raylib.h vs windows.h. `-nettest` ampliado: `rc4=runSyncTest()`, exit 0
