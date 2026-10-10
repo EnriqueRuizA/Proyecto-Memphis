@@ -12,6 +12,7 @@
 #include "campaign.h"
 #include "city.h"
 #include "save.h"
+#include "net.h"
 #include "prof.h"
 #include "mapart.h"
 #include <vector>
@@ -2561,7 +2562,11 @@ GameState updateDrawDefeat(Vector2 mouse){
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
-int main(){
+int main(int argc, char** argv){
+    // Fase E: -nettest ejecuta el self-test de red (headless) y sale con 0/1
+    for(int i=1;i<argc;i++){
+        if(strcmp(argv[i],"-nettest")==0) return runNetTest();
+    }
     // Load persistent settings before creating the window (so resolution applies on startup)
     loadSettings();                  // 3.1: load persistent settings
     SCREEN_W = g_settings.screenW;
