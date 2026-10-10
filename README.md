@@ -79,9 +79,10 @@ procedurales originales (fallback automático).
   - **Limitaciones**: co-op reino compartido (sin dos reinos); defensas IA
     las resuelve el host; cliente sin checks victoria/derrota locales;
     acciones no sincronizadas se sobreescriben con el siguiente snapshot;
-    loopback only; 1 `NetSession`/proceso; UDP asumido sin pérdida.
-    **`missPong`**: el cliente detecta el cierre del host sin `BYE` tras
-    ~10 s sin PONG y muestra "Host lost".
+    1 `NetSession`/proceso; UDP asumido sin pérdida. **`missPong`**: el
+    cliente detecta el cierre del host sin `BYE` tras ~10 s sin PONG y
+    muestra "Host lost". **`INADDR_ANY`**: el host se liga a todas las
+    interfaces (juego en red real LAN/WAN, no solo loopback).
 - Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización ✅
   (incluye H2 ataques). Detalle en `PLAN.md` §12.
 

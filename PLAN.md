@@ -1194,10 +1194,12 @@ mínimo entre host y cliente:
 - **Limitaciones documentadas**: co-op reino compartido (sin dos reinos
   separados); defensas IA las resuelve el host; cliente sin checks
   victoria/derrota locales; acciones no sincronizadas se sobreescriben con
-  el siguiente snapshot; loopback only; 1 `NetSession`/proceso; UDP
-  asumido sin pérdida en loopback. **`missPong` implementado**: el cliente
-  detecta el cierre del host sin `BYE` tras ~10 s sin PONG (600 ticks a
-  ~60 fps) y pone `connected=false` con mensaje "Host lost".
+  el siguiente snapshot; 1 `NetSession`/proceso; UDP asumido sin pérdida
+  en loopback. **`missPong` implementado**: el cliente detecta el cierre
+  del host sin `BYE` tras ~10 s sin PONG (600 ticks a ~60 fps) y pone
+  `connected=false` con mensaje "Host lost". **`INADDR_ANY` implementado**:
+  el socket del host se liga a todas las interfaces (no solo loopback), lo
+  que permite juego en red real; el cliente puede unirse por IP LAN/WAN.
 - `runSyncTest` vive en `src/sync_test.cpp` (incluye `campaign.h`/`raylib.h`,
   sin winsock; usa `std::this_thread::sleep_for`) para evitar el choque
   raylib.h vs windows.h. `-nettest` ampliado: `rc4=runSyncTest()`, exit 0
