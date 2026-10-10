@@ -1107,7 +1107,8 @@ tecnología, **una fase = un commit**, en este orden:
 | Fase I | `ab1ba8e` | Diplomacia: alianzas militares, pactos comerciales, trueque, modos de mapa |
 | Fase K | `6afe190` | Campaña «Great Continent» (32 provincias), 4ª facción Sable Fleet, diplomacia de 4 filas, `SAVE_VERSION` 8 |
 | **Fase E** | `6ab20c8` | **Base de red UDP** (ver §12.1) |
-| Fase F | (§12.2) | Protocolo de sesión (handshake) — en ejecución |
+| **Fase F** | `f1ccb3e` | **Protocolo de sesión** NetMsg + handshake (ver §12.2) |
+| Fase G | (§12.3) | Lobby MULTIPLAYER — en ejecución |
 
 ### 12.1 Fase E — base de red UDP (ejecutada, `6ab20c8`)
 
@@ -1142,12 +1143,28 @@ mínimo entre host y cliente:
   (JOIN→WELCOME, 3×PING/PONG, BYE) → `SESSION PASS/FAIL`; exit 0 solo si ambas
   fases pasan. `build/test_net.ps1` verifica ambas.
 
-### 12.3 Fase G — lobby en el juego (planificada)
+### 12.3 Fase G — lobby en el juego (ejecutada)
 
-- Botón **MULTIPLAYER** en el menú principal → pantalla de lobby:
-  HOST (escucha en 7777) / JOIN (IP: puerto), estado de conexión, lista de
-  jugadores, chat de estado, BACK.
-- Sin gameplay en red todavía: el lobby solo establece y muestra la sesión.
+- Nuevo estado **`STATE_MULTIPLAYER`** + botón **MULTIPLAYER** en el menú
+  (step*7; SETTINGS/EXIT desplazados a step*8/9 — sin tests afectados).
+- Pantalla `updateDrawMultiplayer` (main.cpp): status box (frase de
+  `NetSession::status`), contador de jugadores (vista host), botones
+  HOST/STOP HOSTING, fila JOIN (campo de IP con input de teclado + botón),
+  hint, BACK (abajo-derecha como Diplomacia). BACK y salida del juego
+  cierran la sesión (`netSessionStop` en cleanup de main).
+- API runtime en `net.h`/`net.cpp`: `NetSession` global (role, sock, connected,
+  playerCount, status, peerIp, seq, reintentos), `netSessionHostStart`,
+  `netSessionClientJoin`, `netSessionPoll` (drain no bloqueante + re-JOIN cada
+  60 ticks hasta 5 intentos + keepalive PING cada 120 ticks + BYE al parar).
+- `netRecvMsgFrom` (nueva): expone ip:port de origen; el host responde
+  WELCOME/PONG a la dirección real del cliente (no a sí mismo).
+- `-nettest` ampliado con **`runLobbyTest`**: (1) host arranca, JOIN crudo lo
+  registra (playerCount≥2); (2) cliente sin host nunca conecta → LOBBY PASS.
+- Tests: `build/test_net.ps1` (10 checks) y nuevo `build/test_g_lobby.ps1`
+  (8 checks UI: menú→lobby, HOST status+players, STOP, JOIN status, BACK).
+- Límites conocidos (documentados, sin impacto en el alcance de G): un solo
+  `NetSession` global por proceso (dos instancias = dos procesos); sin UI de
+  lista de jugadores más allá del contador; sin sync de juego (Fase H).
 
 ### 12.4 Fase H — sincronización de campaña (planificada)
 

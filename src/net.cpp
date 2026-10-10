@@ -21,6 +21,13 @@
 
 static bool g_netReady=false;
 
+// Delay simple para tests (Sleep en Windows, usleep en POSIX)
+#ifdef _WIN32
+static void netSleepMs(int ms){ Sleep(ms); }
+#else
+static void netSleepMs(int ms){ usleep((useconds_t)ms*1000); }
+#endif
+
 #ifdef _WIN32
 typedef SOCKET netsock_t;
 #else
@@ -141,12 +148,49 @@ bool netSendMsg(NetSock s, const char* ip, unsigned short port,
 }
 
 int netRecvMsg(NetSock s, NetMsg* out, int timeoutMs){
+    return netRecvMsgFrom(s,out,timeoutMs,nullptr,0,nullptr);
+}
+
+int netRecvMsgFrom(NetSock s, NetMsg* out, int timeoutMs,
+                   char* ipOut, int ipMax, unsigned short* portOut){
     if(!out) return -1;
-    int n=netRecvFrom(s,out,(int)sizeof *out,timeoutMs);
+    if(s==NET_INVALID||!g_netReady) return -1;
+    // Espera readable (select) con timeout
+    fd_set rf;
+    FD_ZERO(&rf);
+#ifdef _WIN32
+    FD_SET((SOCKET)s,&rf);
+#else
+    FD_SET((int)s,&rf);
+#endif
+    timeval tv;
+    tv.tv_sec=timeoutMs/1000;
+    tv.tv_usec=(timeoutMs%1000)*1000;
+#ifdef _WIN32
+    int sel=select(0,&rf,NULL,NULL,&tv);
+#else
+    int sel=select((int)s+1,&rf,NULL,NULL,&tv);
+#endif
+    if(sel==0) return 0;                 // timeout
+    if(sel<0) return -1;                 // error
+    sockaddr_in from;
+    memset(&from,0,sizeof from);
+#ifdef _WIN32
+    int sl=(int)sizeof from;
+#else
+    socklen_t sl=(socklen_t)sizeof from;
+#endif
+    int n=(int)recvfrom((netsock_t)s,(char*)out,(int)sizeof *out,0,
+                        (struct sockaddr*)&from,&sl);
     if(n==0) return 0;
     if(n!=(int)sizeof *out) return -1;          // datagrama truncado/tamaño raro
     if(out->magic!=NET_MAGIC) return -1;        // no es nuestro protocolo
-    if(out->version!=NET_PROTO_VERSION) return -1; // build incompatible (alto nivel: REJECT)
+    if(out->version!=NET_PROTO_VERSION) return -1; // build incompatible
+    if(ipOut&&ipMax>0){
+        const char* ip=inet_ntoa(from.sin_addr);
+        snprintf(ipOut,(size_t)ipMax,"%s",ip?ip:"?");
+    }
+    if(portOut) *portOut=ntohs(from.sin_port);
     return 1;
 }
 
@@ -327,4 +371,243 @@ int runNetTest(){
     }
     printf("NETTEST FAIL (%d/%d)\n",ok,ROUNDS);
     return 1;
+}
+
+// ── Fase G: sesión en runtime (lobby) ───────────────────────────────────────
+
+NetSession g_netSession;
+
+// Estado interno del host (no expuesto en la UI todavia)
+struct NetHostClient {
+    bool     used=false;
+    char     ip[NET_NAME_LEN]={};
+    uint16_t lastSeq=0;
+};
+static NetHostClient g_hostClients[NET_MAX_CLIENTS];
+
+static void sessionReset(){
+    if(g_netSession.sock!=NET_INVALID) netClose(g_netSession.sock);
+    g_netSession = NetSession();          // vuelve a defaults (role NONE, status Idle)
+    for(auto& c : g_hostClients) c = NetHostClient();
+}
+
+bool netSessionHostStart(){
+    if(g_netSession.role!=NET_ROLE_NONE) return false;
+    if(!netInit()){ snprintf(g_netSession.status,sizeof g_netSession.status,"netInit failed"); return false; }
+    unsigned short port=0;
+    NetSock s=netOpen((unsigned short)NET_PORT,&port);
+    if(s==NET_INVALID){
+        snprintf(g_netSession.status,sizeof g_netSession.status,"bind :%d failed (port busy?)",NET_PORT);
+        netShutdown();
+        return false;
+    }
+    g_netSession.sock=s;
+    g_netSession.role=NET_ROLE_HOST;
+    g_netSession.connected=true;
+    g_netSession.playerCount=1;           // solo el host hasta que alguien joine
+    snprintf(g_netSession.status,sizeof g_netSession.status,"Hosting on :%d (waiting)...",NET_PORT);
+    return true;
+}
+
+void netSessionStop(){
+    if(g_netSession.role==NET_ROLE_NONE) return;
+    // Cierre ordenado si estamos cliente y conectados
+    if(g_netSession.role==NET_ROLE_CLIENT&&g_netSession.connected){
+        NetMsg m={};
+        m.type=NET_MSG_BYE;
+        m.seq=++g_netSession.seq;
+        netSendMsg(g_netSession.sock,g_netSession.peerIp,(unsigned short)NET_PORT,m);
+    }
+    sessionReset();
+}
+
+bool netSessionClientJoin(const char* ip){
+    if(g_netSession.role!=NET_ROLE_NONE) return false;
+    if(!ip||!ip[0]) ip="127.0.0.1";
+    if(!netInit()){ snprintf(g_netSession.status,sizeof g_netSession.status,"netInit failed"); return false; }
+    unsigned short port=0;
+    NetSock s=netOpen(0,&port);
+    if(s==NET_INVALID){
+        snprintf(g_netSession.status,sizeof g_netSession.status,"socket failed");
+        netShutdown();
+        return false;
+    }
+    g_netSession.sock=s;
+    g_netSession.role=NET_ROLE_CLIENT;
+    snprintf(g_netSession.peerIp,sizeof g_netSession.peerIp,"%s",ip);
+    g_netSession.joinTries=0;
+    // JOIN inmediato (y netSessionPoll reintentara si no hay respuesta)
+    NetMsg m={};
+    m.type=NET_MSG_JOIN;
+    m.seq=++g_netSession.seq;
+    snprintf(m.payload,sizeof m.payload,"join");
+    if(!netSendMsg(s,ip,(unsigned short)NET_PORT,m)){
+        snprintf(g_netSession.status,sizeof g_netSession.status,"send JOIN failed");
+        sessionReset();
+        return false;
+    }
+    g_netSession.joinTries=1;
+    snprintf(g_netSession.status,sizeof g_netSession.status,"Joining %s:%d...",ip,NET_PORT);
+    return true;
+}
+
+void netSessionPoll(){
+    NetSession& S=g_netSession;
+    if(S.role==NET_ROLE_NONE||S.sock==NET_INVALID) return;
+    S.pollTick++;
+
+    // Procesar todos los mensajes pendientes (no bloqueante: timeout 0)
+    for(int drain=0;drain<16;drain++){
+        NetMsg r={};
+        char srcIp[NET_NAME_LEN]={};
+        unsigned short srcPort=0;
+        int rc=netRecvMsgFrom(S.sock,&r,0,srcIp,(int)sizeof srcIp,&srcPort);
+        if(rc==0) break;                 // no hay mas datagramas
+        if(rc<0) continue;               // datagrama ajeno/truncado: ignorar
+        S.lastMsgType=(int)r.type;
+
+        if(S.role==NET_ROLE_HOST){
+            if(r.type==NET_MSG_JOIN){
+                // Registrar cliente (o actualizar) y responder WELCOME al origen
+                NetHostClient* slot=nullptr;
+                for(auto& c : g_hostClients){
+                    if(c.used&&c.lastSeq==r.seq&&strncmp(c.ip,srcIp,NET_NAME_LEN)==0){ slot=&c; break; }
+                }
+                for(auto& c : g_hostClients){
+                    if(!slot&&!c.used){ slot=&c; break; }
+                }
+                if(slot){
+                    slot->used=true;
+                    slot->lastSeq=r.seq;
+                    snprintf(slot->ip,sizeof slot->ip,"%s",srcIp);
+                    int n=1;
+                    for(auto& c : g_hostClients) if(c.used) n++;
+                    S.playerCount=n;
+                    snprintf(S.status,sizeof S.status,"Hosting on :%d (%d players)",NET_PORT,S.playerCount);
+                }
+                NetMsg w={};
+                w.type=NET_MSG_WELCOME;
+                w.seq=++S.seq;
+                snprintf(w.payload,sizeof w.payload,"v%d",(int)NET_PROTO_VERSION);
+                netSendMsg(S.sock,srcIp,srcPort,w);
+            }else if(r.type==NET_MSG_PING){
+                NetMsg p={};
+                p.type=NET_MSG_PONG;
+                p.seq=++S.seq;
+                memcpy(p.payload,r.payload,sizeof p.payload);
+                netSendMsg(S.sock,srcIp,srcPort,p);
+            }else if(r.type==NET_MSG_BYE){
+                for(auto& c : g_hostClients){
+                    if(c.used&&strncmp(c.ip,srcIp,NET_NAME_LEN)==0) c.used=false;
+                }
+                int n=1;
+                for(auto& c : g_hostClients) if(c.used) n++;
+                S.playerCount=n;
+                snprintf(S.status,sizeof S.status,"Hosting on :%d (%d players)",NET_PORT,S.playerCount);
+            }
+        }else if(S.role==NET_ROLE_CLIENT){
+            if(r.type==NET_MSG_WELCOME&&!S.connected){
+                S.connected=true;
+                S.playerCount=2;
+                snprintf(S.status,sizeof S.status,"Connected to %s (v%d)",S.peerIp,(int)NET_PROTO_VERSION);
+            }else if(r.type==NET_MSG_REJECT){
+                snprintf(S.status,sizeof S.status,"Rejected: %.60s",r.payload);
+                S.connected=false;
+            }else if(r.type==NET_MSG_PONG){
+                // keepalive OK; nada que hacer por ahora
+            }
+        }
+    }
+
+    // Lógica de reintentos/keepalive según tick (~60 fps asumido)
+    if(S.role==NET_ROLE_CLIENT&&!S.connected){
+        if(S.joinTries<5&&S.pollTick%60==0){
+            NetMsg m={};
+            m.type=NET_MSG_JOIN;
+            m.seq=++S.seq;
+            snprintf(m.payload,sizeof m.payload,"join");
+            netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
+            S.joinTries++;
+            snprintf(S.status,sizeof S.status,"Joining %s (try %d)...",S.peerIp,S.joinTries);
+        }else if(S.joinTries>=5&&S.pollTick%60==0){
+            snprintf(S.status,sizeof S.status,"No answer from %s",S.peerIp);
+        }
+    }else if(S.role==NET_ROLE_CLIENT&&S.connected){
+        if(S.pollTick%120==0){           // keepalive cada ~2 s
+            NetMsg m={};
+            m.type=NET_MSG_PING;
+            m.seq=++S.seq;
+            netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
+        }
+    }
+}
+
+int runLobbyTest(){
+    printf("LOBBY: runtime host+cliente loopback (mismo proceso)\n");
+    // NetSession es un global: host y cliente NO coexisten en el mismo proceso.
+    // Test: (1) host arranca y un JOIN crudo lo registra (playerCount>=2);
+    // (2) sin host, clientJoin debe quedar en "No answer" (no connected).
+    if(!netSessionHostStart()){
+        printf("LOBBY FAIL - hostStart (%s)\n",g_netSession.status);
+        netSessionStop();
+        return 1;
+    }
+    printf("LOBBY: host arrancado (%s)\n",g_netSession.status);
+    unsigned short cliPort=0;
+    NetSock cli=netOpen(0,&cliPort);
+    if(cli==NET_INVALID){
+        printf("LOBBY FAIL - socket cliente\n");
+        netSessionStop();
+        return 1;
+    }
+    NetMsg m={};
+    m.type=NET_MSG_JOIN;
+    m.seq=1;
+    snprintf(m.payload,sizeof m.payload,"join");
+    if(!netSendMsg(cli,"127.0.0.1",(unsigned short)NET_PORT,m)){
+        printf("LOBBY FAIL - send JOIN\n");
+        netClose(cli); netSessionStop();
+        return 1;
+    }
+    bool gotJoin=false;
+    for(int i=0;i<50&&!gotJoin;i++){
+        netSessionPoll();
+        // Tras drenar, el WELCOME ecoado al propio host puede sobreescribir
+        // lastMsgType; playerCount>=2 es la señal robusta de registro.
+        if(g_netSession.playerCount>=2){ gotJoin=true; }
+        else { netSleepMs(20); }
+    }
+    if(!gotJoin){
+        printf("LOBBY FAIL - host no vio JOIN (status=%s)\n",g_netSession.status);
+        netClose(cli); netSessionStop();
+        return 1;
+    }
+    int pc=g_netSession.playerCount;
+    printf("LOBBY: host registro JOIN (players=%d status=%s)\n",pc,g_netSession.status);
+    netClose(cli);
+    netSessionStop();
+    if(pc<2){
+        printf("LOBBY FAIL - playerCount %d\n",pc);
+        return 1;
+    }
+    // Segundo escenario: cliente arranca sin host -> no debe conectar
+    if(!netSessionClientJoin("127.0.0.1")){
+        printf("LOBBY FAIL - clientJoin (%s)\n",g_netSession.status);
+        netSessionStop();
+        return 1;
+    }
+    for(int i=0;i<40&&!g_netSession.connected;i++){
+        netSessionPoll();
+        netSleepMs(20);
+    }
+    bool wronglyConnected=g_netSession.connected;
+    printf("LOBBY: cliente sin host -> connected=%d status=%s\n",
+           (int)g_netSession.connected,g_netSession.status);
+    netSessionStop();
+    if(wronglyConnected){
+        printf("LOBBY FAIL - connected sin host\n");
+        return 1;
+    }
+    printf("LOBBY PASS\n");
+    return 0;
 }

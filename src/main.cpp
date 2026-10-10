@@ -2477,8 +2477,11 @@ GameState updateDrawMainMenu(Vector2 mouse){
     if(drawButton({bx,menuTop+step*6.f,bw,bh},"UNIT EDITOR",mouse)){
         return STATE_UNIT_EDITOR;
     }
-    if(drawButton({bx,menuTop+step*7.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
-    if(drawButton({bx,menuTop+step*8.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
+    if(drawButton({bx,menuTop+step*7.f,bw,bh},"MULTIPLAYER",mouse)){
+        return STATE_MULTIPLAYER;
+    }
+    if(drawButton({bx,menuTop+step*8.f,bw,bh},"SETTINGS",mouse)) return STATE_SETTINGS;
+    if(drawButton({bx,menuTop+step*9.f,bw,bh},"EXIT",mouse,{60,28,28,255},{100,45,45,255})){
         g_quitRequested=true;
     }
 
@@ -2560,16 +2563,113 @@ GameState updateDrawDefeat(Vector2 mouse){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  FASE G — MULTIPLAYER LOBBY (host/join; sin sincronización de juego aun)
+// ═══════════════════════════════════════════════════════════════════════════
+GameState updateDrawMultiplayer(Vector2 mouse){
+    netSessionPoll();
+
+    ClearBackground(C_BG);
+    DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{10,8,6,255},C_BG);
+    int titleFs=32;
+    float titleY=uiPx(30.f);
+    int tw2=MeasureText("MULTIPLAYER",titleFs);
+    DrawText("MULTIPLAYER",SCREEN_W/2-tw2/2,(int)titleY,titleFs,C_GOLD);
+    float lineY=titleY+(float)uiFS(titleFs)+uiPx(10.f);
+    float lineW=uiPx(200.f);
+    DrawLine(SCREEN_W/2-(int)lineW,(int)lineY,SCREEN_W/2+(int)lineW,(int)lineY,C_GOLD);
+
+    float cw=fminf(uiPx(520.f),(float)SCREEN_W-uiPx(60.f));
+    float cx=(float)SCREEN_W*0.5f - cw*0.5f;
+    float cy=lineY+uiPx(28.f);
+
+    // Status box
+    float stH=uiPx(64.f);
+    Rectangle stR={cx,cy,cw,stH};
+    DrawRectangleRec(stR,Color{12,18,12,220});
+    DrawRectangleLinesEx(stR,1,Color{60,90,40,255});
+    DrawText("Status:",(int)(cx+uiPx(12.f)),(int)(cy+uiPx(10.f)),12,C_SECONDARY);
+    DrawText(g_netSession.status,(int)(cx+uiPx(12.f)),(int)(cy+uiPx(32.f)),14,C_PARCHMENT);
+    cy+=stH+uiPx(20.f);
+
+    // Player count (host view)
+    if(g_netSession.role==NET_ROLE_HOST){
+        char pbuf[64];
+        snprintf(pbuf,sizeof pbuf,"Players: %d / %d",g_netSession.playerCount,NET_MAX_CLIENTS+1);
+        DrawText(pbuf,(int)cx,(int)cy,13,C_PARCHMENT);
+        cy+=uiPx(28.f);
+    }
+
+    float bh=uiPx(44.f);
+    // HOST / STOP
+    const char* hostLbl = (g_netSession.role==NET_ROLE_HOST)?"STOP HOSTING":"HOST GAME";
+    Color hostN = (g_netSession.role==NET_ROLE_HOST)?Color{55,25,25,255}:Color{40,55,40,255};
+    Color hostH = (g_netSession.role==NET_ROLE_HOST)?Color{90,40,40,255}:Color{70,110,60,255};
+    if(drawButton({cx,cy,cw,bh},hostLbl,mouse,hostN,hostH)){
+        if(g_netSession.role==NET_ROLE_HOST){
+            netSessionStop();
+        }else if(g_netSession.role==NET_ROLE_NONE){
+            netSessionHostStart();
+        }
+    }
+    cy+=bh+uiPx(14.f);
+
+    // JOIN row: IP field + button
+    static char s_ip[64]="127.0.0.1";
+    float ipW=cw*0.62f;
+    float jnW=cw-ipW-uiPx(10.f);
+    Rectangle ipR={cx,cy,ipW,bh};
+    bool ipHv=ptInRect(mouse,ipR);
+    DrawRectangleRec(ipR,ipHv?Color{18,28,18,220}:Color{12,18,12,220});
+    DrawRectangleLinesEx(ipR,1,Color{60,90,40,255});
+    // text input (solo si no estamos en sesion)
+    if(g_netSession.role==NET_ROLE_NONE){
+        int key=GetCharPressed();
+        while(key>0){
+            if(key>=32&&key<=126){
+                size_t len=strlen(s_ip);
+                if(len<sizeof(s_ip)-1){ s_ip[len]=(char)key; s_ip[len+1]='\0'; }
+            }
+            key=GetCharPressed();
+        }
+        if(IsKeyPressed(KEY_BACKSPACE)){
+            size_t len=strlen(s_ip);
+            if(len>0) s_ip[len-1]='\0';
+        }
+    }
+    DrawText(s_ip,(int)(cx+uiPx(10.f)),(int)(cy+bh*0.5f-uiPx(8.f)),14,C_PARCHMENT);
+    bool joinEnabled=(g_netSession.role==NET_ROLE_NONE);
+    if(drawButton({cx+ipW+uiPx(10.f),cy,jnW,bh},"JOIN",mouse,
+                  joinEnabled?Color{40,55,40,255}:Color{30,30,30,255},
+                  joinEnabled?Color{70,110,60,255}:Color{30,30,30,255})&&joinEnabled){
+        netSessionClientJoin(s_ip);
+    }
+    cy+=bh+uiPx(24.f);
+
+    // Hint
+    const char* hint="Host listens on UDP port 7777. Join needs the host IP.";
+    int hw=MeasureText(hint,12);
+    DrawText(hint,SCREEN_W/2-hw/2,(int)cy,12,C_SECONDARY);
+
+    // BACK (abajo a la derecha, como Diplomacia)
+    if(drawButton({(float)(SCREEN_W-160),(float)(SCREEN_H-44),140,36},"BACK",mouse)){
+        netSessionStop();
+        return STATE_MAIN_MENU;
+    }
+    return STATE_MULTIPLAYER;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 int main(int argc, char** argv){
-    // Fase E/F: -nettest ejecuta los self-tests de red (headless) y sale con 0/1
-    // (capa cruda ping/pong + sesión JOIN/WELCOME/PING/BYE de la Fase F)
+    // Fase E/F/G: -nettest ejecuta los self-tests de red (headless) y sale
+    // con 0/1 (capa cruda + sesión + runtime de lobby)
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"-nettest")==0){
             int rc=runNetTest();
             int rc2=runSessionTest();
-            return (rc==0&&rc2==0)?0:1;
+            int rc3=runLobbyTest();
+            return (rc==0&&rc2==0&&rc3==0)?0:1;
         }
     }
     // Load persistent settings before creating the window (so resolution applies on startup)
@@ -2674,6 +2774,9 @@ int main(int argc, char** argv){
             case STATE_DIPLOMACY:
                 g_state=updateDrawDiplomacy(mouse);
                 break;
+            case STATE_MULTIPLAYER:
+                g_state=updateDrawMultiplayer(mouse);
+                break;
         }
         // 4.9: Global FPS (shown in non-battle states too)
         if(g_settings.showFPS&&g_state!=STATE_BATTLE) DrawFPS(8,8);
@@ -2707,6 +2810,7 @@ int main(int argc, char** argv){
     // Auto-save on exit if campaign active
     if(g_campaign.turn>1) saveGame();
 
+    netSessionStop();   // Fase G: cierra socket de red si quedaba abierto
     shutdownAudio();
     atmosShutdown();
     CloseWindow();

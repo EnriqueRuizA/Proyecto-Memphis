@@ -48,7 +48,8 @@ enum GameState {
     STATE_VICTORY,
     STATE_DEFEAT,
     STATE_MARKETPLACE,     // 6.5: resource trading
-    STATE_DIPLOMACY        // Fase I: alianzas + trueque con facciones IA
+    STATE_DIPLOMACY,       // Fase I: alianzas + trueque con facciones IA
+    STATE_MULTIPLAYER      // Fase G: lobby de red (host/join, sin sync aun)
 };
 
 // Some screens (unit lists, dense tables) have fixed row heights. To avoid

@@ -58,10 +58,13 @@ procedurales originales (fallback automático).
 - `src/net.h` / `src/net.cpp` — base UDP no bloqueante (Winsock2), loopback
   `127.0.0.1:7777` (evita avisos de firewall; `INADDR_ANY` llegará con el
   protocolo de juego).
-- `rts_game.exe -nettest` — self-test headless: ping/pong crudo (10 rondas) y
-  sesión loopback (JOIN→WELCOME, PING/PONG, BYE). Sale con 0=PASS / 1=FAIL.
-- Roadmap: F protocolo de sesión → G lobby en el menú → H sincronización de
-  campaña (host autoritativo). Detalle en `PLAN.md` §12.
+- `rts_game.exe -nettest` — self-test headless: ping/pong crudo (10 rondas),
+  sesión loopback (JOIN→WELCOME, PING/PONG, BYE) y runtime de lobby
+  (host registra JOIN; cliente sin host no conecta). Sale con 0=PASS / 1=FAIL.
+- Botón **MULTIPLAYER** en el menú → lobby: HOST (escucha UDP 7777), JOIN por
+  IP, estado de conexión. Sin sincronización de juego todavía.
+- Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización de campaña
+  (host autoritativo). Detalle en `PLAN.md` §12.
 
 ## Tests
 
@@ -71,6 +74,7 @@ puro para PowerShell 5.1). Requieren `uiScale 1.000` en `settings.ini` y
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\test_net.ps1     # red (-nettest)
+powershell -ExecutionPolicy Bypass -File build\test_g_lobby.ps1 # lobby multiplayer (UI)
 powershell -ExecutionPolicy Bypass -File build\test_faseK.ps1   # campaña Great Continent
 powershell -ExecutionPolicy Bypass -File build\test_faseI.ps1   # diplomacia
 powershell -ExecutionPolicy Bypass -File build\test_faseJ.ps1   # ejércitos de campo

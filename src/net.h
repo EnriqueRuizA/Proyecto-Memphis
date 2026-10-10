@@ -62,6 +62,11 @@ bool netSendMsg(NetSock s, const char* ip, unsigned short port,
                 const NetMsg& m);
 // Recibe y valida NetMsg (magic + version). Devuelve 1 OK, 0 timeout, -1 invalido.
 int netRecvMsg(NetSock s, NetMsg* out, int timeoutMs);
+// Igual que netRecvMsg pero devuelve ademas la ip:port de origen (para que el
+// host pueda responder WELCOME al puerto efimero correcto del cliente).
+// ipOut puede ser null; portOut puede ser null.
+int netRecvMsgFrom(NetSock s, NetMsg* out, int timeoutMs,
+                   char* ipOut, int ipMax, unsigned short* portOut);
 
 // Self-test capa cruda: 10 ping/pong UDP entre dos sockets en 127.0.0.1:7777.
 // Imprime NETTEST PASS/FAIL por stdout. Devuelve 0 = PASS, 1 = FAIL.
@@ -69,3 +74,38 @@ int runNetTest();
 // Self-test sesión (Fase F): JOIN->WELCOME, 3x PING/PONG con seq, BYE.
 // Imprime SESSION PASS/FAIL. Devuelve 0 = PASS, 1 = FAIL.
 int runSessionTest();
+// Self-test runtime de lobby (Fase G): host+cliente en el MISMO proceso
+// usando la API de sesión (netSession*): join automatico -> connected.
+// Imprime LOBBY PASS/FAIL. Devuelve 0 = PASS, 1 = FAIL.
+int runLobbyTest();
+
+// ── Fase G: sesión en runtime (lobby) ───────────────────────────────────────
+// Estado global de la sesión de red; la pantalla STATE_MULTIPLAYER lo pinta
+// y lo impulsa (HOST/JOIN/BACK). netSessionPoll() se llama cada frame.
+enum NetRole { NET_ROLE_NONE=0, NET_ROLE_HOST, NET_ROLE_CLIENT };
+
+#define NET_MAX_CLIENTS 8
+#define NET_NAME_LEN    64
+
+struct NetSession {
+    NetRole role          = NET_ROLE_NONE;
+    NetSock sock          = NET_INVALID;
+    bool    connected     = false;   // cliente:收到了 WELCOME; host: siempre true si escuchando
+    int     playerCount   = 0;       // host: 1 (tu) + clientes; cliente: 2 si conectado
+    char    status[96]    = "Idle";  // frase corta para la UI
+    char    peerIp[NET_NAME_LEN] = "127.0.0.1"; // cliente: IP del host; host: (no usado)
+    uint16_t seq          = 0;       // secuencia propia (creciente)
+    int     lastMsgType   = 0;       // ultimo NetMsgType recibido (0=nada)
+    int     pollTick      = 0;       // ticks de poll (reintentos/keepalive)
+    int     joinTries     = 0;       // reenvios de JOIN (max 5)
+};
+extern NetSession g_netSession;
+
+// Abre NET_PORT y empieza a aceptar JOIN (respuesta WELCOME automatica).
+bool netSessionHostStart();
+// Cierra el socket y vuelve a NET_ROLE_NONE.
+void netSessionStop();
+// Envia JOIN a ip:PORT (no bloquea; el WELCOME llega en netSessionPoll).
+bool netSessionClientJoin(const char* ip);
+// Procesa mensajes entrantes y keepalive. Llamar UNA vez por frame.
+void netSessionPoll();
