@@ -1109,7 +1109,7 @@ tecnología, **una fase = un commit**, en este orden:
 | **Fase E** | `6ab20c8` | **Base de red UDP** (ver §12.1) |
 | **Fase F** | `f1ccb3e` | **Protocolo de sesión** NetMsg + handshake (ver §12.2) |
 | **Fase G** | `d705913` | **Lobby MULTIPLAYER** (ver §12.3) |
-| **Fase H** | `d705913+` | **Sincronización de campaña** host autoritativo (ver §12.4) |
+| **Fase H** | `cafed73` | **Sincronización de campaña** host autoritativo (ver §12.4) |
 
 ### 12.1 Fase E — base de red UDP (ejecutada, `6ab20c8`)
 
