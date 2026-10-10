@@ -1108,7 +1108,8 @@ tecnología, **una fase = un commit**, en este orden:
 | Fase K | `6afe190` | Campaña «Great Continent» (32 provincias), 4ª facción Sable Fleet, diplomacia de 4 filas, `SAVE_VERSION` 8 |
 | **Fase E** | `6ab20c8` | **Base de red UDP** (ver §12.1) |
 | **Fase F** | `f1ccb3e` | **Protocolo de sesión** NetMsg + handshake (ver §12.2) |
-| Fase G | (§12.3) | Lobby MULTIPLAYER — en ejecución |
+| **Fase G** | `d705913` | **Lobby MULTIPLAYER** (ver §12.3) |
+| **Fase H** | `d705913+` | **Sincronización de campaña** host autoritativo (ver §12.4) |
 
 ### 12.1 Fase E — base de red UDP (ejecutada, `6ab20c8`)
 
@@ -1166,15 +1167,37 @@ mínimo entre host y cliente:
   `NetSession` global por proceso (dos instancias = dos procesos); sin UI de
   lista de jugadores más allá del contador; sin sync de juego (Fase H).
 
-### 12.4 Fase H — sincronización de campaña (planificada)
+### 12.4 Fase H — sincronización de campaña (ejecutada)
 
-- Modelo **host autoritativo**: el host procesa el turno y envía eventos de
-  dominio (movimiento de ejército, reclutamiento, batalla auto-resolve,
-  resultado de batalla real) a los clientes.
-- Clientes aplican eventos sobre una copia local de `CampaignState`; divergencias
-  se resuelven re-sincronizando el estado completo del turno.
-- Límite inicial: 2 jugadores, misma campaña (por ejemplo, aliados o bandos
-  enfrentados según la diplomacia existente).
+- Modelo **host autoritativo co-op**: reino compartido (mismas provincias,
+  recursos y ejércitos para todos). El host es la única fuente de verdad;
+  los clientes envían comandos y aplican snapshots.
+- **Snapshot**: binario `SAVE_VERSION=8` (mismo formato que `saveGame`),
+  troceado en paquetes `NET_MSG_SNAPSHOT` (chunk 1024 B, tope 256 KiB).
+  `serializeCampaignState`/`deserializeCampaignState` refactorizados en
+  `save.cpp`; `saveGame`/`loadGame` son wrappers byte-idénticos.
+- **Comandos** (`NET_MSG_CMD`, cliente → host): `END_TURN`, `MOVE_ARMY`
+  (propias), `RECRUIT`, `DISBAND`, `SYNC_REQ`. El host valida y aplica;
+  si el estado cambió, retransmite snapshot a todos los clientes.
+- **Integración** (`main.cpp`): helpers `netIsClient`/`netIsHost`/
+  `netMarkDirty`/`netCanEdit`/`netHostApplyCmd`/`netSyncPump` (1×/frame en
+  el main loop). El cliente no muta recursos/localmente en acciones de
+  edición; las envía como comandos.
+- **Limitaciones documentadas** (H2 pendiente): co-op reino compartido
+  (sin dos reinos separados); solo 4 tipos de comandos (ataques/batallas
+  co-op pendientes); defensas IA las resuelve el host; cliente sin checks
+  victoria/derrota locales; acciones no sincronizadas se sobreescriben con
+  el siguiente snapshot; loopback only; 1 `NetSession`/proceso; UDP
+  asumido sin pérdida en loopback; el cliente no detecta cierre de host
+  sin `BYE` (`missPong` no implementado).
+- `runSyncTest` vive en `src/sync_test.cpp` (incluye `campaign.h`/`raylib.h`,
+  sin winsock; usa `std::this_thread::sleep_for`) para evitar el choque
+  raylib.h vs windows.h. `-nettest` ampliado: `rc4=runSyncTest()`, exit 0
+  solo si los 4 tests PASS. Verificado: SYNC PASS (blob 489 B, 1 trozo,
+  deserialización y broadcast correctos).
+- Tests: `build/test_h_sync.ps1` (11 checks, ALL PASS). Regresión completa
+  verde: `test_net`, `test_g_lobby`, `test_h_sync`, `test_faseK/I/J/D`,
+  `test_ranged`.
 
 ### 12.5 Infraestructura de tests (build/, ignorada en Git)
 
@@ -1189,9 +1212,10 @@ incidencias reales:
   **blanca** (superficie DWM colgada) aunque el proceso renderizaba.
 - `settings.ini` debe mantener **uiScale 1.000**: los tests muestrean píxeles
   a escala 1.0 (1.212 rompía todos los umbrales).
-- Suite actual (todas ALL PASS tras la Fase E): `test_net` (3), `test_faseK` (12),
-  `test_faseI` (25), `test_faseJ` (24), `test_faseD` (19), `test_ranged` (7),
-  `test_vfx` (visual). `test_battle.ps1` es legacy (usa `rts_game_mod.exe`
-  inexistente): fuera de la suite.
+- Suite actual (todas ALL PASS tras la Fase H): `test_net` (10, -nettest),
+  `test_h_sync` (11, -nettest SYNC), `test_g_lobby` (8, lobby UI),
+  `test_faseK` (12), `test_faseI` (25), `test_faseJ` (24), `test_faseD` (19),
+  `test_ranged` (7), `test_vfx` (visual). `test_battle.ps1` es legacy (usa
+  `rts_game_mod.exe` inexistente): fuera de la suite.
 - La suite dura ~2,5 min; si se usa el equipo durante la ejecución pueden
   perderse checks sensibles al foco (interferencia, no regresión).

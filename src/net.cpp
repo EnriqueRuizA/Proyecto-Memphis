@@ -1,6 +1,8 @@
 // src/net.cpp — Base de red UDP (Fase E)
 // Winsock2 se incluye PRIMERO (antes de raylib/windows.h) para evitar el
-// conflicto clasico winsock2.h despues de windows.h.
+// conflicto clasico winsock2.h despues de windows.h. NO incluir campaign.h
+// ni save.h aqui (traen raylib.h, que choca con windows.h en la misma TU);
+// runSyncTest vive en src/sync_test.cpp.
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +20,7 @@
 #include "net.h"
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 static bool g_netReady=false;
 
@@ -137,6 +140,45 @@ int netRecvFrom(NetSock s, void* buf, int maxLen, int timeoutMs){
     return n;
 }
 
+// Fase H: como netRecvFrom pero devuelve ademas ip:port de origen (para que
+// el drain de netSessionPoll pueda distinguir clientes y responderles).
+static int netRecvFromRaw(NetSock s, void* buf, int maxLen, int timeoutMs,
+                          char* ipOut, int ipMax, unsigned short* portOut){
+    if(s==NET_INVALID||!g_netReady||maxLen<=0) return -1;
+    fd_set rf;
+    FD_ZERO(&rf);
+#ifdef _WIN32
+    FD_SET((SOCKET)s,&rf);
+#else
+    FD_SET((int)s,&rf);
+#endif
+    timeval tv;
+    tv.tv_sec=timeoutMs/1000;
+    tv.tv_usec=(timeoutMs%1000)*1000;
+#ifdef _WIN32
+    int r=select(0,&rf,NULL,NULL,&tv);
+#else
+    int r=select((int)s+1,&rf,NULL,NULL,&tv);
+#endif
+    if(r==0) return 0;
+    if(r<0) return -1;
+    sockaddr_in from;
+    memset(&from,0,sizeof from);
+#ifdef _WIN32
+    int sl=(int)sizeof from;
+#else
+    socklen_t sl=(socklen_t)sizeof from;
+#endif
+    int n=(int)recvfrom((netsock_t)s,(char*)buf,maxLen,0,(struct sockaddr*)&from,&sl);
+    if(n<0) return -1;
+    if(ipOut&&ipMax>0){
+        const char* ip=inet_ntoa(from.sin_addr);
+        snprintf(ipOut,(size_t)ipMax,"%s",ip?ip:"?");
+    }
+    if(portOut) *portOut=ntohs(from.sin_port);
+    return n;
+}
+
 // ── Fase F: protocolo de sesión ─────────────────────────────────────────────
 
 bool netSendMsg(NetSock s, const char* ip, unsigned short port,
@@ -192,6 +234,75 @@ int netRecvMsgFrom(NetSock s, NetMsg* out, int timeoutMs,
     }
     if(portOut) *portOut=ntohs(from.sin_port);
     return 1;
+}
+
+// ── Fase H: snapshots de campaña + comandos ────────────────────────────────
+
+bool netSendSnapMsg(NetSock s, const char* ip, unsigned short port,
+                    const NetSnapMsg& m){
+    NetSnapMsg out=m;
+    out.magic=NET_MAGIC;
+    out.version=(unsigned char)NET_PROTO_VERSION;
+    return netSendTo(s,ip,port,&out,(int)sizeof out)==(int)sizeof out;
+}
+
+int netRecvSnapMsg(NetSock s, NetSnapMsg* out, int timeoutMs){
+    if(!out) return -1;
+    if(s==NET_INVALID||!g_netReady) return -1;
+    fd_set rf;
+    FD_ZERO(&rf);
+#ifdef _WIN32
+    FD_SET((SOCKET)s,&rf);
+#else
+    FD_SET((int)s,&rf);
+#endif
+    timeval tv;
+    tv.tv_sec=timeoutMs/1000;
+    tv.tv_usec=(timeoutMs%1000)*1000;
+#ifdef _WIN32
+    int sel=select(0,&rf,NULL,NULL,&tv);
+#else
+    int sel=select((int)s+1,&rf,NULL,NULL,&tv);
+#endif
+    if(sel==0) return 0;
+    if(sel<0) return -1;
+    sockaddr_in from;
+    memset(&from,0,sizeof from);
+#ifdef _WIN32
+    int sl=(int)sizeof from;
+#else
+    socklen_t sl=(socklen_t)sizeof from;
+#endif
+    int n=(int)recvfrom((netsock_t)s,(char*)out,(int)sizeof *out,0,
+                        (struct sockaddr*)&from,&sl);
+    if(n==0) return 0;
+    if(n!=(int)sizeof *out) return -1;
+    if(out->magic!=NET_MAGIC) return -1;
+    if(out->version!=NET_PROTO_VERSION) return -1;
+    if(out->type!=NET_MSG_SNAPSHOT) return -1;
+    if(out->len>NET_SNAP_CHUNK) return -1;
+    return 1;
+}
+
+bool netSendSnapshot(NetSock s, const char* ip, unsigned short port,
+                     const void* blob, uint32_t size){
+    if(!blob||size==0||size>NET_SNAP_MAX) return false;
+    uint16_t seq=(uint16_t)(size&0xFFFF); // determinista por tamano (solo validacion)
+    uint32_t off=0;
+    while(off<size){
+        NetSnapMsg m={};
+        m.type=NET_MSG_SNAPSHOT;
+        m.seq=seq;
+        m.offset=off;
+        m.total=size;
+        uint32_t chunk=size-off;
+        if(chunk>NET_SNAP_CHUNK) chunk=NET_SNAP_CHUNK;
+        m.len=(uint16_t)chunk;
+        memcpy(m.data,(const char*)blob+off,chunk);
+        if(!netSendSnapMsg(s,ip,port,m)) return false;
+        off+=chunk;
+    }
+    return true;
 }
 
 int runSessionTest(){
@@ -381,6 +492,7 @@ NetSession g_netSession;
 struct NetHostClient {
     bool     used=false;
     char     ip[NET_NAME_LEN]={};
+    uint16_t port=0;       // Fase H: puerto efimero del cliente (para snapshots)
     uint16_t lastSeq=0;
 };
 static NetHostClient g_hostClients[NET_MAX_CLIENTS];
@@ -456,14 +568,45 @@ void netSessionPoll(){
     if(S.role==NET_ROLE_NONE||S.sock==NET_INVALID) return;
     S.pollTick++;
 
-    // Procesar todos los mensajes pendientes (no bloqueante: timeout 0)
-    for(int drain=0;drain<16;drain++){
-        NetMsg r={};
+    // Procesar todos los mensajes pendientes (no bloqueante: timeout 0).
+    // Fase H: el drain recibe en un buffer generoso para poder distinguir
+    // NetMsg (72 B) de NetSnapMsg (1032 B) por el tamaño del datagrama.
+    for(int drain=0;drain<32;drain++){
+        unsigned char raw[sizeof(NetSnapMsg)];
         char srcIp[NET_NAME_LEN]={};
         unsigned short srcPort=0;
-        int rc=netRecvMsgFrom(S.sock,&r,0,srcIp,(int)sizeof srcIp,&srcPort);
-        if(rc==0) break;                 // no hay mas datagramas
-        if(rc<0) continue;               // datagrama ajeno/truncado: ignorar
+        int n=netRecvFromRaw(S.sock,raw,sizeof raw,0,srcIp,(int)sizeof srcIp,&srcPort);
+        if(n==0) break;                 // no hay mas datagramas
+        if(n<0) continue;               // error
+        if(n<(int)(sizeof(uint32_t)+2)) continue; // demasiado corto
+        uint32_t magic=0; memcpy(&magic,raw,4);
+        if(magic!=NET_MAGIC) continue;  // no es nuestro protocolo
+        unsigned char ver=raw[5];
+        if(ver!=NET_PROTO_VERSION) continue; // build incompatible
+        unsigned char type=raw[4];
+
+        // ── Fase H: snapshot (solo cliente lo recibe) ──
+        if(type==NET_MSG_SNAPSHOT&&n==(int)sizeof(NetSnapMsg)&&S.role==NET_ROLE_CLIENT){
+            NetSnapMsg sm; memcpy(&sm,raw,sizeof sm);
+            if(sm.len>NET_SNAP_CHUNK) continue;
+            if(sm.total==0||sm.total>NET_SNAP_MAX) continue;
+            if(sm.offset>sm.total||(uint64_t)sm.offset+sm.len>sm.total) continue;
+            if(sm.total!=S.snapSize||sm.offset!=S.snapRecv){
+                // trozo fuera de orden o de otra sesion: reiniciar ensamblado
+                S.snapSize=sm.total;
+                S.snapRecv=0;
+            }
+            memcpy(S.snapBuf+sm.offset,sm.data,sm.len);
+            S.snapRecv+=sm.len;
+            if(S.snapRecv>=S.snapSize){
+                S.snapReady=true;
+                S.snapSize=S.snapRecv;
+            }
+            continue;
+        }
+
+        if(n!=(int)sizeof(NetMsg)) continue; // tamaño raro
+        NetMsg r={}; memcpy(&r,raw,sizeof r);
         S.lastMsgType=(int)r.type;
 
         if(S.role==NET_ROLE_HOST){
@@ -473,17 +616,20 @@ void netSessionPoll(){
                 for(auto& c : g_hostClients){
                     if(c.used&&c.lastSeq==r.seq&&strncmp(c.ip,srcIp,NET_NAME_LEN)==0){ slot=&c; break; }
                 }
+                bool isNew=false;
                 for(auto& c : g_hostClients){
-                    if(!slot&&!c.used){ slot=&c; break; }
+                    if(!slot&&!c.used){ slot=&c; isNew=true; break; }
                 }
                 if(slot){
                     slot->used=true;
                     slot->lastSeq=r.seq;
+                    slot->port=srcPort;
                     snprintf(slot->ip,sizeof slot->ip,"%s",srcIp);
-                    int n=1;
-                    for(auto& c : g_hostClients) if(c.used) n++;
-                    S.playerCount=n;
+                    int cnt=1;
+                    for(auto& c : g_hostClients) if(c.used) cnt++;
+                    S.playerCount=cnt;
                     snprintf(S.status,sizeof S.status,"Hosting on :%d (%d players)",NET_PORT,S.playerCount);
+                    if(isNew) S.needSnapshot=true; // Fase H: enviar snapshot al nuevo
                 }
                 NetMsg w={};
                 w.type=NET_MSG_WELCOME;
@@ -500,10 +646,19 @@ void netSessionPoll(){
                 for(auto& c : g_hostClients){
                     if(c.used&&strncmp(c.ip,srcIp,NET_NAME_LEN)==0) c.used=false;
                 }
-                int n=1;
-                for(auto& c : g_hostClients) if(c.used) n++;
-                S.playerCount=n;
+                int cnt=1;
+                for(auto& c : g_hostClients) if(c.used) cnt++;
+                S.playerCount=cnt;
                 snprintf(S.status,sizeof S.status,"Hosting on :%d (%d players)",NET_PORT,S.playerCount);
+            }else if(r.type==NET_MSG_CMD){
+                // Fase H: comando de juego del cliente -> cola local
+                if(S.cmdCount<(int)(sizeof S.cmdQueue/sizeof S.cmdQueue[0])){
+                    NetCmd& c=S.cmdQueue[S.cmdCount++];
+                    c.cmd=(unsigned char)r.payload[0];
+                    memcpy(&c.a,r.payload+1,4);
+                    memcpy(&c.b,r.payload+5,4);
+                    memcpy(&c.c,r.payload+9,4);
+                }
             }
         }else if(S.role==NET_ROLE_CLIENT){
             if(r.type==NET_MSG_WELCOME&&!S.connected){
@@ -540,6 +695,56 @@ void netSessionPoll(){
             netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
         }
     }
+}
+
+// ── Fase H: comandos + broadcast de snapshot ────────────────────────────────
+
+bool netSessionSendCmd(const NetCmd& c){
+    NetSession& S=g_netSession;
+    if(S.role!=NET_ROLE_CLIENT||!S.connected||S.sock==NET_INVALID) return false;
+    NetMsg m={};
+    m.type=NET_MSG_CMD;
+    m.seq=++S.seq;
+    m.payload[0]=(char)c.cmd;
+    memcpy(m.payload+1,&c.a,4);
+    memcpy(m.payload+5,&c.b,4);
+    memcpy(m.payload+9,&c.c,4);
+    return netSendMsg(S.sock,S.peerIp,(unsigned short)NET_PORT,m);
+}
+
+int netSessionTakeCmd(NetCmd* out, int maxOut){
+    NetSession& S=g_netSession;
+    if(S.role!=NET_ROLE_HOST||!out||maxOut<=0) return 0;
+    int n=0;
+    while(n<maxOut&&S.cmdCount>0){
+        out[n++]=S.cmdQueue[0];
+        for(int i=1;i<S.cmdCount;i++) S.cmdQueue[i-1]=S.cmdQueue[i];
+        S.cmdCount--;
+    }
+    return n;
+}
+
+bool netSessionBroadcastSnapshot(const void* blob, uint32_t size){
+    NetSession& S=g_netSession;
+    if(S.role!=NET_ROLE_HOST||S.sock==NET_INVALID||!blob||size==0) return false;
+    bool any=false;
+    for(auto& c : g_hostClients){
+        if(!c.used) continue;
+        if(netSendSnapshot(S.sock,c.ip,c.port,blob,size)) any=true;
+    }
+    return any;
+}
+
+void netSessionConsumeSnapshot(){
+    g_netSession.snapReady=false;
+    g_netSession.snapSize=0;
+    g_netSession.snapRecv=0;
+}
+
+bool netSessionHasClients(){
+    if(g_netSession.role!=NET_ROLE_HOST) return false;
+    for(auto& c : g_hostClients) if(c.used) return true;
+    return false;
 }
 
 int runLobbyTest(){
@@ -611,3 +816,7 @@ int runLobbyTest(){
     printf("LOBBY PASS\n");
     return 0;
 }
+
+// Fase H: runSyncTest vive en src/sync_test.cpp (incluye campaign.h/raylib.h,
+// que no puede coexistir con windows.h de winsock en esta unidad).
+

@@ -26,95 +26,222 @@ const char* getCampaignSavePath(int id){
 }
 //  SAVE / LOAD — Campaign persistence per campaign file
 // ═══════════════════════════════════════════════════════════════════════════
+// Fase H: la escritura campo a campo vive ahora en serializeCampaignState
+// (buffer en memoria); saveGame solo vuelca ese buffer a disco. El formato
+// binario es IDENTICO al anterior (SAVE_VERSION=8), asi que los saves viejos
+// siguen cargando.
 
-void saveGame(){
-    const char* path=getCampaignSavePath(g_campaign.campaignId);
-    FILE* f=fopen(path,"wb");
-    if(!f) return;
-    fwrite(&SAVE_VERSION,sizeof(int),1,f);
-    fwrite(&g_campaign.campaignId,sizeof(int),1,f);
-    fwrite(&g_campaign.turn,sizeof(int),1,f);
-    fwrite(&g_campaign.res,sizeof(Resources),1,f);
-    fwrite(&g_campaign.playerProvince,sizeof(int),1,f);
-    fwrite(&g_campaign.pendingBattleProvince,sizeof(int),1,f);
-    fwrite(&g_campaign.pendingBattleIsDefense,sizeof(bool),1,f);
-    fwrite(&g_campaign.viewedCity,sizeof(int),1,f);
+static void bw(std::vector<char>& out, const void* p, size_t n){
+    const char* c=(const char*)p;
+    out.insert(out.end(),c,c+n);
+}
+template <typename T>
+static void bw1(std::vector<char>& out, const T& v){ bw(out,&v,sizeof v); }
 
-    int np=(int)g_campaign.provinces.size();
-    fwrite(&np,sizeof(int),1,f);
-    for(auto& p:g_campaign.provinces){
-        fwrite(p.name,1,32,f);
-        fwrite(&p.center.x,sizeof(float),1,f);
-        fwrite(&p.center.y,sizeof(float),1,f);
-        fwrite(&p.nx,sizeof(float),1,f);
-        fwrite(&p.ny,sizeof(float),1,f);
-        int ter=(int)p.terrain; fwrite(&ter,sizeof(int),1,f);
-        int own=(int)p.owner;   fwrite(&own,sizeof(int),1,f);
-        fwrite(&p.hasCity,sizeof(bool),1,f);
+bool serializeCampaignState(const CampaignState& st, std::vector<char>& out){
+    out.clear();
+    bw1(out,SAVE_VERSION);
+    bw1(out,st.campaignId);
+    bw1(out,st.turn);
+    bw1(out,st.res);
+    bw1(out,st.playerProvince);
+    bw1(out,st.pendingBattleProvince);
+    bw1(out,st.pendingBattleIsDefense);
+    bw1(out,st.viewedCity);
+
+    int np=(int)st.provinces.size();
+    bw1(out,np);
+    for(const auto& p:st.provinces){
+        bw(out,p.name,32);
+        bw1(out,p.center.x);
+        bw1(out,p.center.y);
+        bw1(out,p.nx);
+        bw1(out,p.ny);
+        int ter=(int)p.terrain; bw1(out,ter);
+        int own=(int)p.owner;   bw1(out,own);
+        bw1(out,p.hasCity);
         if(p.hasCity){
-            fwrite(p.city.name,1,32,f);
-            fwrite(p.city.built,sizeof(bool),BLD_COUNT,f);
-            fwrite(&p.city.constructing,sizeof(int),1,f);
-            fwrite(&p.city.constructTurns,sizeof(int),1,f);
-            fwrite(&p.city.defBonus,sizeof(float),1,f);
+            bw(out,p.city.name,32);
+            bw(out,p.city.built,sizeof(bool)*BLD_COUNT);
+            bw1(out,p.city.constructing);
+            bw1(out,p.city.constructTurns);
+            bw1(out,p.city.defBonus);
         }
         int nadj=(int)p.adjacent.size();
-        fwrite(&nadj,sizeof(int),1,f);
-        for(int a : p.adjacent) fwrite(&a,sizeof(int),1,f);
+        bw1(out,nadj);
+        for(int a : p.adjacent) bw1(out,a);
         int narmy=(int)p.army.size();
-        fwrite(&narmy,sizeof(int),1,f);
-        for(auto& ap : p.army){ fwrite(&ap.first,sizeof(int),1,f); fwrite(&ap.second,sizeof(int),1,f); }
+        bw1(out,narmy);
+        for(const auto& ap : p.army){ bw1(out,ap.first); bw1(out,ap.second); }
     }
 
-    int nq=(int)g_campaign.recruitQueue.size();
-    fwrite(&nq,sizeof(int),1,f);
-    for(auto& e:g_campaign.recruitQueue){
-        fwrite(&e.typeIdx,sizeof(int),1,f);
-        fwrite(&e.turnsLeft,sizeof(int),1,f);
+    int nq=(int)st.recruitQueue.size();
+    bw1(out,nq);
+    for(const auto& e:st.recruitQueue){
+        bw1(out,e.typeIdx);
+        bw1(out,e.turnsLeft);
     }
 
-    int na=(int)g_campaign.playerArmy.size();
-    fwrite(&na,sizeof(int),1,f);
-    for(auto& a:g_campaign.playerArmy){
-        fwrite(&a.first,sizeof(int),1,f);
-        fwrite(&a.second,sizeof(int),1,f);
+    int na=(int)st.playerArmy.size();
+    bw1(out,na);
+    for(const auto& a:st.playerArmy){ bw1(out,a.first); bw1(out,a.second); }
+
+    int nr=(int)st.readyUnits.size();
+    bw1(out,nr);
+    for(const auto& r:st.readyUnits){ bw1(out,r.first); bw1(out,r.second); }
+
+    // Fase J: ejércitos de campo + reserva
+    int nA=(int)st.armies.size();
+    bw1(out,nA);
+    for(const auto& a:st.armies){
+        int id=a.id, prov=a.province, own=(int)a.owner;
+        unsigned char mv=a.moved?1:0;
+        bw1(out,id); bw1(out,own); bw1(out,prov); bw1(out,mv);
+        int nu=(int)a.units.size();
+        bw1(out,nu);
+        for(const auto& u:a.units){ bw1(out,u.first); bw1(out,u.second); }
+    }
+    int nR=(int)st.reserve.size();
+    bw1(out,nR);
+    for(const auto& r:st.reserve){ bw1(out,r.first); bw1(out,r.second); }
+
+    // Fase I: diplomacia — alianzas militares + pactos comerciales
+    bw(out,st.allied,sizeof(bool)*FACTION_COUNT);
+    bw(out,st.tradePact,sizeof(bool)*FACTION_COUNT);
+    return true;
+}
+
+// Lector de buffer con validación de límites (mismos límites que loadGame)
+namespace {
+struct BufReader {
+    const char* p; size_t len, off=0; bool ok=true;
+    void r(void* d, size_t n){
+        if(!ok||off+n>len){ ok=false; memset(d,0,n); return; }
+        memcpy(d,p+off,n); off+=n;
+    }
+    template <typename T> T r1(){ T v{}; r(&v,sizeof v); return v; }
+};
+}
+
+bool deserializeCampaignState(CampaignState& st, const char* data, size_t size){
+    if(!data||size<sizeof(int)) return false;
+    BufReader b{data,size};
+    int ver=b.r1<int>();
+    if(!b.ok||ver!=SAVE_VERSION) return false;
+
+    st.campaignId=b.r1<int>();
+    st.turn=b.r1<int>();
+    st.res=b.r1<Resources>();
+    st.playerProvince=b.r1<int>();
+    st.pendingBattleProvince=b.r1<int>();
+    st.pendingBattleIsDefense=b.r1<bool>();
+    st.viewedCity=b.r1<int>();
+
+    int np=b.r1<int>();
+    if(!b.ok||np<=0||np>256) return false;
+    st.provinces.clear();
+    st.provinces.resize(np);
+    for(int i=0;i<np;i++){
+        Province& p=st.provinces[i];
+        b.r(p.name,32);
+        p.center.x=b.r1<float>();
+        p.center.y=b.r1<float>();
+        p.nx=b.r1<float>();
+        p.ny=b.r1<float>();
+        int ter=b.r1<int>(), own=b.r1<int>();
+        p.terrain=(TerrainType)ter;
+        p.owner=(FactionId)own;
+        p.hasCity=b.r1<bool>();
+        if(p.hasCity){
+            b.r(p.city.name,32);
+            b.r(p.city.built,sizeof(bool)*BLD_COUNT);
+            p.city.constructing=b.r1<int>();
+            p.city.constructTurns=b.r1<int>();
+            p.city.defBonus=b.r1<float>();
+        }
+        int nadj=b.r1<int>();
+        if(!b.ok||nadj<0||nadj>64) return false;
+        p.adjacent.clear();
+        for(int j=0;j<nadj;j++){ int a=b.r1<int>(); p.adjacent.push_back(a); }
+        int narmy=b.r1<int>();
+        if(!b.ok||narmy<0||narmy>128) return false;
+        p.army.clear();
+        for(int j=0;j<narmy;j++){
+            int ti=b.r1<int>(), cnt=b.r1<int>();
+            p.army.push_back({ti,cnt});
+        }
+        if(!b.ok) return false;
     }
 
-    int nr=(int)g_campaign.readyUnits.size();
-    fwrite(&nr,sizeof(int),1,f);
-    for(auto& r:g_campaign.readyUnits){
-        fwrite(&r.first,sizeof(int),1,f);
-        fwrite(&r.second,sizeof(int),1,f);
+    int nq=b.r1<int>();
+    if(!b.ok||nq<0||nq>256) return false;
+    st.recruitQueue.clear();
+    for(int i=0;i<nq;i++){
+        int ti=b.r1<int>(), tl=b.r1<int>();
+        st.recruitQueue.push_back({ti,tl,tl});
+        if(!b.ok) return false;
+    }
+
+    int na=b.r1<int>();
+    if(!b.ok||na<0||na>256) return false;
+    st.playerArmy.clear();
+    for(int i=0;i<na;i++){
+        int ti=b.r1<int>(), cnt=b.r1<int>();
+        st.playerArmy.push_back({ti,cnt});
+        if(!b.ok) return false;
+    }
+
+    int nr=b.r1<int>();
+    if(!b.ok||nr<0||nr>256) return false;
+    st.readyUnits.clear();
+    for(int i=0;i<nr;i++){
+        int ti=b.r1<int>(), cnt=b.r1<int>();
+        st.readyUnits.push_back({ti,cnt});
+        if(!b.ok) return false;
     }
 
     // Fase J: ejércitos de campo + reserva
-    int nA=(int)g_campaign.armies.size();
-    fwrite(&nA,sizeof(int),1,f);
-    for(auto& a:g_campaign.armies){
-        int id=a.id, prov=a.province, own=(int)a.owner;
-        unsigned char mv=a.moved?1:0;
-        fwrite(&id,sizeof(int),1,f);
-        fwrite(&own,sizeof(int),1,f);
-        fwrite(&prov,sizeof(int),1,f);
-        fwrite(&mv,sizeof(unsigned char),1,f);
-        int nu=(int)a.units.size();
-        fwrite(&nu,sizeof(int),1,f);
-        for(auto& u:a.units){
-            fwrite(&u.first,sizeof(int),1,f);
-            fwrite(&u.second,sizeof(int),1,f);
+    st.armies.clear();
+    st.reserve.clear();
+    st.nextArmyId=1;
+    int nA=b.r1<int>();
+    if(!b.ok||nA<0||nA>64) return false;
+    for(int i=0;i<nA;i++){
+        FieldArmy a;
+        int id=b.r1<int>(), own=b.r1<int>(), prov=b.r1<int>();
+        unsigned char mv=b.r1<unsigned char>();
+        int nu=b.r1<int>();
+        if(!b.ok||nu<0||nu>256) return false;
+        a.id=id; a.owner=(FactionId)own; a.province=prov; a.moved=(mv!=0);
+        for(int j=0;j<nu;j++){
+            int ti=b.r1<int>(), cnt=b.r1<int>();
+            a.units.push_back({ti,cnt});
+            if(!b.ok) return false;
         }
+        st.armies.push_back(a);
+        if(id>=st.nextArmyId) st.nextArmyId=id+1;
     }
-    int nR=(int)g_campaign.reserve.size();
-    fwrite(&nR,sizeof(int),1,f);
-    for(auto& r:g_campaign.reserve){
-        fwrite(&r.first,sizeof(int),1,f);
-        fwrite(&r.second,sizeof(int),1,f);
+    int nR=b.r1<int>();
+    if(!b.ok||nR<0||nR>512) return false;
+    for(int i=0;i<nR;i++){
+        int ti=b.r1<int>(), cnt=b.r1<int>();
+        st.reserve.push_back({ti,cnt});
+        if(!b.ok) return false;
     }
 
     // Fase I: diplomacia — alianzas militares + pactos comerciales
-    fwrite(g_campaign.allied,sizeof(bool),FACTION_COUNT,f);
-    fwrite(g_campaign.tradePact,sizeof(bool),FACTION_COUNT,f);
+    b.r(st.allied,sizeof(bool)*FACTION_COUNT);
+    b.r(st.tradePact,sizeof(bool)*FACTION_COUNT);
+    return b.ok;
+}
 
+void saveGame(){
+    const char* path=getCampaignSavePath(g_campaign.campaignId);
+    std::vector<char> blob;
+    if(!serializeCampaignState(g_campaign,blob)) return;
+    FILE* f=fopen(path,"wb");
+    if(!f) return;
+    fwrite(blob.data(),1,blob.size(),f);
     fclose(f);
     g_hasSave=true;
     // Remember last played campaign for Continue
@@ -132,122 +259,42 @@ bool loadGame(){
     const char* path=getCampaignSavePath(loadId);
     FILE* f=fopen(path,"rb");
     if(!f) return false;
-    int ver=0;
-    if(fread(&ver,sizeof(int),1,f)!=1||ver!=SAVE_VERSION){ fclose(f); return false; }
-
-    if(fread(&g_campaign.campaignId,sizeof(int),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.turn,sizeof(int),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.res,sizeof(Resources),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.playerProvince,sizeof(int),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.pendingBattleProvince,sizeof(int),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.pendingBattleIsDefense,sizeof(bool),1,f)!=1){ fclose(f); return false; }
-    if(fread(&g_campaign.viewedCity,sizeof(int),1,f)!=1){ fclose(f); return false; }
-
-    int np=0;
-    if(fread(&np,sizeof(int),1,f)!=1||np<=0||np>256){ fclose(f); return false; }
-    g_campaign.provinces.clear();
-    g_campaign.provinces.resize(np);
-    for(int i=0;i<np;i++){
-        Province& p=g_campaign.provinces[i];
-        if(fread(p.name,1,32,f)!=32){ fclose(f); return false; }
-        if(fread(&p.center.x,sizeof(float),1,f)!=1){ fclose(f); return false; }
-        if(fread(&p.center.y,sizeof(float),1,f)!=1){ fclose(f); return false; }
-        if(fread(&p.nx,sizeof(float),1,f)!=1){ fclose(f); return false; }
-        if(fread(&p.ny,sizeof(float),1,f)!=1){ fclose(f); return false; }
-        int ter=0,own=0;
-        if(fread(&ter,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        if(fread(&own,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        p.terrain=(TerrainType)ter;
-        p.owner=(FactionId)own;
-        if(fread(&p.hasCity,sizeof(bool),1,f)!=1){ fclose(f); return false; }
-        if(p.hasCity){
-            if(fread(p.city.name,1,32,f)!=32){ fclose(f); return false; }
-            if(fread(p.city.built,sizeof(bool),BLD_COUNT,f)!=BLD_COUNT){ fclose(f); return false; }
-            if(fread(&p.city.constructing,sizeof(int),1,f)!=1){ fclose(f); return false; }
-            if(fread(&p.city.constructTurns,sizeof(int),1,f)!=1){ fclose(f); return false; }
-            if(fread(&p.city.defBonus,sizeof(float),1,f)!=1){ fclose(f); return false; }
-        }
-        int nadj=0;
-        if(fread(&nadj,sizeof(int),1,f)!=1||nadj<0||nadj>64){ fclose(f); return false; }
-        p.adjacent.clear();
-        for(int j=0;j<nadj;j++){ int a=0; if(fread(&a,sizeof(int),1,f)!=1){ fclose(f); return false; } p.adjacent.push_back(a); }
-        int narmy=0;
-        if(fread(&narmy,sizeof(int),1,f)!=1||narmy<0||narmy>128){ fclose(f); return false; }
-        p.army.clear();
-        for(int j=0;j<narmy;j++){
-            int ti=0,cnt=0;
-            if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-            p.army.push_back({ti,cnt});
-        }
-    }
-
-    int nq=0;
-    if(fread(&nq,sizeof(int),1,f)!=1||nq<0||nq>256){ fclose(f); return false; }
-    g_campaign.recruitQueue.clear();
-    for(int i=0;i<nq;i++){
-        int ti=0,tl=0;
-        if(fread(&ti,sizeof(int),1,f)!=1||fread(&tl,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        g_campaign.recruitQueue.push_back({ti,tl});
-    }
-
-    int na=0;
-    if(fread(&na,sizeof(int),1,f)!=1||na<0||na>256){ fclose(f); return false; }
-    g_campaign.playerArmy.clear();
-    for(int i=0;i<na;i++){
-        int ti=0,cnt=0;
-        if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        g_campaign.playerArmy.push_back({ti,cnt});
-    }
-
-    int nr=0;
-    if(fread(&nr,sizeof(int),1,f)!=1||nr<0||nr>256){ fclose(f); return false; }
-    g_campaign.readyUnits.clear();
-    for(int i=0;i<nr;i++){
-        int ti=0,cnt=0;
-        if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        g_campaign.readyUnits.push_back({ti,cnt});
-    }
-
-    // Fase J: ejércitos de campo + reserva
-    g_campaign.armies.clear();
-    g_campaign.reserve.clear();
-    int nA=0;
-    if(fread(&nA,sizeof(int),1,f)!=1||nA<0||nA>64){ fclose(f); return false; }
-    for(int i=0;i<nA;i++){
-        FieldArmy a;
-        int id=0,prov=0,own=0,nu=0;
-        unsigned char mv=0;
-        if(fread(&id,sizeof(int),1,f)!=1||fread(&own,sizeof(int),1,f)!=1||
-           fread(&prov,sizeof(int),1,f)!=1||fread(&mv,sizeof(unsigned char),1,f)!=1||
-           fread(&nu,sizeof(int),1,f)!=1||nu<0||nu>256){ fclose(f); return false; }
-        a.id=id; a.owner=(FactionId)own; a.province=prov; a.moved=(mv!=0);
-        for(int j=0;j<nu;j++){
-            int ti=0,cnt=0;
-            if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-            a.units.push_back({ti,cnt});
-        }
-        g_campaign.armies.push_back(a);
-        if(id>=g_campaign.nextArmyId) g_campaign.nextArmyId=id+1;
-    }
-    int nR=0;
-    if(fread(&nR,sizeof(int),1,f)!=1||nR<0||nR>512){ fclose(f); return false; }
-    for(int i=0;i<nR;i++){
-        int ti=0,cnt=0;
-        if(fread(&ti,sizeof(int),1,f)!=1||fread(&cnt,sizeof(int),1,f)!=1){ fclose(f); return false; }
-        g_campaign.reserve.push_back({ti,cnt});
-    }
-
-    // Fase I: diplomacia — alianzas militares + pactos comerciales
-    if(fread(g_campaign.allied,sizeof(bool),FACTION_COUNT,f)!=FACTION_COUNT){ fclose(f); return false; }
-    if(fread(g_campaign.tradePact,sizeof(bool),FACTION_COUNT,f)!=FACTION_COUNT){ fclose(f); return false; }
-
+    fseek(f,0,SEEK_END);
+    long sz=ftell(f);
+    fseek(f,0,SEEK_SET);
+    if(sz<=0){ fclose(f); return false; }
+    std::vector<char> blob((size_t)sz);
+    if(fread(blob.data(),1,(size_t)sz,f)!=(size_t)sz){ fclose(f); return false; }
     fclose(f);
+    if(!deserializeCampaignState(g_campaign,blob.data(),blob.size())) return false;
+
     updateProvinceCenters();
     g_campaign.playerArmy = g_campaign.readyUnits; // 1.4: sync after load
     // Fase J: readyUnits es una vista del ejército seleccionado
     if(!g_campaign.armies.empty()) selectArmy(0);
     else { g_campaign.selectedArmy=-1; }
     g_campaign.playerArmy = g_campaign.readyUnits;
+    return true;
+}
+
+// Fase H: aplicar un snapshot de red al estado local (mismo post-proceso que
+// loadGame, pero sin tocar disco). Devuelve false si el blob es invalido.
+bool applyCampaignSnapshot(const char* data, size_t size){
+    if(!deserializeCampaignState(g_campaign,data,size)) return false;
+    updateProvinceCenters();
+    if(!g_campaign.armies.empty()){
+        if(g_campaign.selectedArmy<0||g_campaign.selectedArmy>=(int)g_campaign.armies.size())
+            g_campaign.selectedArmy=0;
+        selectArmy(g_campaign.selectedArmy);
+    } else {
+        g_campaign.selectedArmy=-1;
+        g_campaign.playerArmy=g_campaign.readyUnits;
+    }
+    // Cancelar cualquier animación de movimiento en curso
+    g_campaign.armyMoveFrom=-1;
+    g_campaign.armyMoveTo=-1;
+    g_campaign.armyMoveIdx=-1;
+    g_campaign.armyMoveT=0.f;
     return true;
 }
 

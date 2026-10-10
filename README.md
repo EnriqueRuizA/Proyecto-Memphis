@@ -53,18 +53,32 @@ procedurales originales (fallback automático).
 - `PLAN.md` — plan de reestructuración, histórico de fases (§12) y estado.
 - `settings.example.ini` — plantilla versionada de la configuración.
 
-## Red (Fase E+, work in progress)
+## Red (Fases E–H)
 
 - `src/net.h` / `src/net.cpp` — base UDP no bloqueante (Winsock2), loopback
   `127.0.0.1:7777` (evita avisos de firewall; `INADDR_ANY` llegará con el
   protocolo de juego).
 - `rts_game.exe -nettest` — self-test headless: ping/pong crudo (10 rondas),
-  sesión loopback (JOIN→WELCOME, PING/PONG, BYE) y runtime de lobby
-  (host registra JOIN; cliente sin host no conecta). Sale con 0=PASS / 1=FAIL.
+  sesión loopback (JOIN→WELCOME, PING/PONG, BYE), runtime de lobby y
+  **sincronización de campaña** (snapshot serializado + comandos + broadcast).
+  Sale con 0=PASS / 1=FAIL (los 4 tests deben pasar).
 - Botón **MULTIPLAYER** en el menú → lobby: HOST (escucha UDP 7777), JOIN por
-  IP, estado de conexión. Sin sincronización de juego todavía.
-- Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización de campaña
-  (host autoritativo). Detalle en `PLAN.md` §12.
+  IP, estado de conexión.
+- **Fase H — sincronización de campaña (host autoritativo co-op)**:
+  - Host mantiene la única copia de `CampaignState`; los clientes envían
+    comandos (`END_TURN`, `MOVE_ARMY`, `RECRUIT`, `DISBAND`) y aplican
+    snapshots troceados (`NET_MSG_SNAPSHOT`, chunk 1024 B, tope 256 KiB).
+  - El snapshot usa el mismo formato binario `SAVE_VERSION=8` que `saveGame`.
+  - `netSyncPump()` en el main loop drena comandos y retransmite si el
+    estado cambió.
+  - **Limitaciones**: co-op reino compartido (sin dos reinos); solo 4 tipos
+    de comandos (ataques/batallas co-op pendientes H2); defensas IA las
+    resuelve el host; cliente sin checks victoria/derrota locales; acciones
+    no sincronizadas se sobreescriben con el siguiente snapshot; loopback
+    only; 1 `NetSession`/proceso; UDP asumido sin pérdida; cliente no
+    detecta cierre de host sin `BYE`.
+- Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización ✅.
+  Detalle en `PLAN.md` §12.
 
 ## Tests
 
@@ -74,6 +88,7 @@ puro para PowerShell 5.1). Requieren `uiScale 1.000` en `settings.ini` y
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\test_net.ps1     # red (-nettest)
+powershell -ExecutionPolicy Bypass -File build\test_h_sync.ps1  # sync campana (-nettest)
 powershell -ExecutionPolicy Bypass -File build\test_g_lobby.ps1 # lobby multiplayer (UI)
 powershell -ExecutionPolicy Bypass -File build\test_faseK.ps1   # campaña Great Continent
 powershell -ExecutionPolicy Bypass -File build\test_faseI.ps1   # diplomacia

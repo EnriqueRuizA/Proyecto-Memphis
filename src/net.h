@@ -44,7 +44,9 @@ enum NetMsgType : unsigned char {
     NET_MSG_REJECT  = 3,  // host -> cliente: rechazado (payload: razon corta)
     NET_MSG_PING    = 4,  // keepalive either way (payload: eco del seq)
     NET_MSG_PONG    = 5,  // respuesta a PING
-    NET_MSG_BYE     = 6   // cierre ordenado
+    NET_MSG_BYE     = 6,  // cierre ordenado
+    NET_MSG_SNAPSHOT= 7,  // Fase H: host -> clientes, trozo de snapshot de campana
+    NET_MSG_CMD     = 8   // Fase H: cliente -> host, comando de juego
 };
 
 #pragma pack(push,1)
@@ -68,6 +70,51 @@ int netRecvMsg(NetSock s, NetMsg* out, int timeoutMs);
 int netRecvMsgFrom(NetSock s, NetMsg* out, int timeoutMs,
                    char* ipOut, int ipMax, unsigned short* portOut);
 
+// ── Fase H: snapshots de campaña + comandos ────────────────────────────────
+// El estado de campaña (hasta ~64-128 KB serializado) viaja en trozos
+// NetSnapMsg (datagrama UDP independiente por trozo; en loopback no hay
+// perdidas y el limite real de UDP es ~64 KB por datagrama).
+#define NET_SNAP_CHUNK 1024
+#define NET_SNAP_MAX   (256*1024)
+
+#pragma pack(push,1)
+struct NetSnapMsg {
+    uint32_t      magic;    // NET_MAGIC
+    unsigned char type;     // NET_MSG_SNAPSHOT
+    unsigned char version;  // NET_PROTO_VERSION
+    uint16_t      seq;      // secuencia del emisor
+    uint32_t      offset;   // byte offset de este trozo en el blob completo
+    uint32_t      total;    // tamano total del blob
+    uint16_t      len;      // bytes validos en data (<= NET_SNAP_CHUNK)
+    char          data[NET_SNAP_CHUNK];
+};
+#pragma pack(pop)
+
+// Comandos de juego (cliente -> host) transportados en NetMsg.payload.
+enum NetCmdType : unsigned char {
+    NET_CMD_END_TURN  = 1,  // cliente pide pasar turno (host ejecuta processTurn)
+    NET_CMD_MOVE_ARMY = 2,  // a=from, b=to, c=armyIdx (o -1 = playerProvince)
+    NET_CMD_RECRUIT   = 3,  // a=provinceIdx, b=typeIdx
+    NET_CMD_DISBAND   = 4,  // a=armyIdx
+    NET_CMD_SYNC_REQ  = 5   // cliente pide snapshot completo
+};
+
+struct NetCmd {
+    unsigned char cmd=0;
+    int a=0, b=0, c=0;
+};
+
+// Envia NetSnapMsg validado (magic/version). Devuelve true si OK.
+bool netSendSnapMsg(NetSock s, const char* ip, unsigned short port,
+                    const NetSnapMsg& m);
+// Recibe y valida NetSnapMsg (magic + version + tamaño exacto).
+// Devuelve 1 OK, 0 timeout, -1 invalido.
+int  netRecvSnapMsg(NetSock s, NetSnapMsg* out, int timeoutMs);
+// Envia un blob completo troceado a ip:port. Devuelve true si todos los
+// trozos salieron.
+bool netSendSnapshot(NetSock s, const char* ip, unsigned short port,
+                     const void* blob, uint32_t size);
+
 // Self-test capa cruda: 10 ping/pong UDP entre dos sockets en 127.0.0.1:7777.
 // Imprime NETTEST PASS/FAIL por stdout. Devuelve 0 = PASS, 1 = FAIL.
 int runNetTest();
@@ -78,6 +125,11 @@ int runSessionTest();
 // usando la API de sesión (netSession*): join automatico -> connected.
 // Imprime LOBBY PASS/FAIL. Devuelve 0 = PASS, 1 = FAIL.
 int runLobbyTest();
+// Self-test de sincronización de campaña (Fase H): serializa una campaña
+// construida a mano, la envía troceada por loopback, la reensambla,
+// la deserializa y comprueba campos clave; tambien prueba el canal de
+// comandos (NET_MSG_CMD). Imprime SYNC PASS/FAIL. Devuelve 0 = PASS, 1 = FAIL.
+int runSyncTest();
 
 // ── Fase G: sesión en runtime (lobby) ───────────────────────────────────────
 // Estado global de la sesión de red; la pantalla STATE_MULTIPLAYER lo pinta
@@ -98,6 +150,14 @@ struct NetSession {
     int     lastMsgType   = 0;       // ultimo NetMsgType recibido (0=nada)
     int     pollTick      = 0;       // ticks de poll (reintentos/keepalive)
     int     joinTries     = 0;       // reenvios de JOIN (max 5)
+    // Fase H: cola de comandos recibidos (host) y snapshot recibido (cliente)
+    NetCmd  cmdQueue[32];
+    int     cmdCount      = 0;
+    bool    snapReady     = false;   // cliente: hay snapshot completo pendiente de aplicar
+    char    snapBuf[NET_SNAP_MAX];
+    uint32_t snapSize     = 0;
+    uint32_t snapRecv     = 0;
+    bool    needSnapshot  = false;   // host: nuevo cliente registrado -> enviar snapshot
 };
 extern NetSession g_netSession;
 
@@ -109,3 +169,14 @@ void netSessionStop();
 bool netSessionClientJoin(const char* ip);
 // Procesa mensajes entrantes y keepalive. Llamar UNA vez por frame.
 void netSessionPoll();
+
+// Fase H: sincronización de campaña (host autoritativo)
+// Host: encola un comando recibido; netSessionTakeCmd lo extrae.
+bool netSessionSendCmd(const NetCmd& c);              // cliente -> host
+int  netSessionTakeCmd(NetCmd* out, int maxOut);      // host drena su cola
+// Host: envia el blob de campaña serializado a todos los clientes conectados.
+bool netSessionBroadcastSnapshot(const void* blob, uint32_t size);
+// Cliente: marca el snapshot como consumido (ya aplicado a g_campaign).
+void netSessionConsumeSnapshot();
+// Host: true si hay al menos 1 cliente conectado.
+bool netSessionHasClients();

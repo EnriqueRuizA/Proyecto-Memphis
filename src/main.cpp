@@ -60,6 +60,125 @@ int       g_editorFocusField = -1;     // which stat textbox is focused (-1 = no
 std::string g_editorFocusBuf;           // current text being edited in focused textbox
 
 // ───────────────────────────────────────────────────────────────────────────
+//  FASE H — SINCRONIZACIÓN DE CAMPAÑA (host autoritativo, co-op)
+// Modelo: ambos jugadores comparten el mismo reino. El cliente envía
+// comandos (END_TURN/MOVE_ARMY/RECRUIT/DISBAND) y el host los aplica y
+// retransmite un snapshot (mismo formato binario SAVE_VERSION=8 que
+// saveGame). El cliente no muta estado local: lo sobreescribe el snapshot.
+// ───────────────────────────────────────────────────────────────────────────
+static bool g_netDirty=false; // host: hay cambios locales sin retransmitir
+
+static bool netIsClient(){
+    return g_netSession.role==NET_ROLE_CLIENT&&g_netSession.connected;
+}
+static bool netIsHost(){
+    return g_netSession.role==NET_ROLE_HOST;
+}
+// Host: marca el estado de campaña como cambiado (se retransmite en
+// netSyncPump). En cliente no hace nada (el estado no es local).
+static void netMarkDirty(){
+    if(netIsHost()) g_netDirty=true;
+}
+// Cliente: true si puede ejecutar acciones locales de campaña (en co-op
+// el host es autoritativo; el cliente solo observa y envía comandos).
+static bool netCanEdit(){
+    return !netIsClient();
+}
+
+// Host: aplica un comando recibido del cliente (validación básica).
+static void netHostApplyCmd(const NetCmd& c){
+    switch(c.cmd){
+    case NET_CMD_END_TURN:{
+        if(g_state!=STATE_CAMPAIGN_MAP) break; // host ocupado (batalla, etc.)
+        bool pending=processTurn();
+        int totalProv=(int)g_campaign.provinces.size();
+        int playerProv=0;
+        for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+        g_netDirty=true;
+        if(playerProv>=(int)(totalProv*0.8f)) g_state=STATE_VICTORY;
+        else if(playerProv==0) g_state=STATE_DEFEAT;
+        else if(pending) g_state=STATE_PRE_BATTLE;
+        break;
+    }
+    case NET_CMD_MOVE_ARMY:{
+        if(g_state!=STATE_CAMPAIGN_MAP) break;
+        int from=c.a,to=c.b,mi=c.c;
+        if(from<0||from>=(int)g_campaign.provinces.size()) break;
+        if(to<0||to>=(int)g_campaign.provinces.size()) break;
+        bool adj=false; for(int a:g_campaign.provinces[from].adjacent) if(a==to) adj=true;
+        if(!adj) break;
+        if(g_campaign.provinces[to].owner!=FACTION_PLAYER) break; // solo provincias propias
+        if(mi>=0&&mi<(int)g_campaign.armies.size()&&g_campaign.armies[mi].owner==FACTION_PLAYER){
+            if(g_campaign.armies[mi].province==from&&!g_campaign.armies[mi].moved){
+                g_campaign.armies[mi].province=to; g_campaign.armies[mi].moved=true; selectArmy(mi); g_netDirty=true;
+            }
+        } else if(g_campaign.playerProvince==from){
+            g_campaign.playerProvince=to; g_netDirty=true;
+        }
+        break;
+    }
+    case NET_CMD_RECRUIT:{
+        if(g_state!=STATE_CAMPAIGN_MAP&&g_state!=STATE_RECRUITMENT&&
+           g_state!=STATE_CITY_MANAGEMENT) break;
+        int prov=c.a,ti=c.b;
+        if(prov<0||prov>=(int)g_campaign.provinces.size()) break;
+        Province& p=g_campaign.provinces[prov];
+        if(p.owner!=FACTION_PLAYER||!p.hasCity) break;
+        if(ti<0||ti>=unitTypeCount()) break;
+        const UnitTypeDef& td=g_unitTypes[ti];
+        if(td.recruitGold<0) break;
+        Resources& r=g_campaign.res;
+        if(r.gold<td.recruitGold||r.food<td.recruitFood||r.iron<td.recruitIron) break;
+        r.gold-=td.recruitGold; r.food-=td.recruitFood; r.iron-=td.recruitIron;
+        g_campaign.recruitQueue.push_back({ti,td.recruitTurns,td.recruitTurns});
+        g_netDirty=true;
+        break;
+    }
+    case NET_CMD_DISBAND:{
+        if(g_state!=STATE_CAMPAIGN_MAP) break;
+        int mi=c.a;
+        if(mi>=0&&mi<(int)g_campaign.armies.size()&&g_campaign.armies[mi].owner==FACTION_PLAYER){
+            disbandArmy(mi); g_netDirty=true;
+        }
+        break;
+    }
+    case NET_CMD_SYNC_REQ: g_netDirty=true; break;
+    }
+}
+
+// Un frame de sincronización (llamar 1×/frame cuando hay sesión activa).
+static void netSyncPump(){
+    if(g_netSession.role==NET_ROLE_NONE) return;
+    netSessionPoll();
+    if(netIsHost()){
+        NetCmd cmds[8];
+        int n=netSessionTakeCmd(cmds,8);
+        for(int i=0;i<n;i++) netHostApplyCmd(cmds[i]);
+        if(g_netSession.needSnapshot){ g_netSession.needSnapshot=false; g_netDirty=true; }
+        if(g_netDirty&&netSessionHasClients()&&!g_campaign.provinces.empty()&&
+           g_state!=STATE_MAIN_MENU&&g_state!=STATE_MULTIPLAYER){
+            std::vector<char> blob;
+            if(serializeCampaignState(g_campaign,blob))
+                netSessionBroadcastSnapshot(blob.data(),(uint32_t)blob.size());
+        }
+        g_netDirty=false;
+    } else if(netIsClient()){
+        if(g_netSession.snapReady){
+            GameState st=g_state;
+            bool safe=(st==STATE_CAMPAIGN_MAP||st==STATE_MULTIPLAYER||st==STATE_MAIN_MENU||
+                       st==STATE_RECRUITMENT||st==STATE_CITY_MANAGEMENT||st==STATE_MARKETPLACE||
+                       st==STATE_DIPLOMACY||st==STATE_UNIT_CODEX);
+            if(safe){
+                if(applyCampaignSnapshot(g_netSession.snapBuf,g_netSession.snapSize)){
+                    netSessionConsumeSnapshot();
+                    if(st==STATE_MULTIPLAYER||st==STATE_MAIN_MENU) g_state=STATE_CAMPAIGN_MAP;
+                } else netSessionConsumeSnapshot();
+            }
+        }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 //  STATE: BATTLE
 // ═══════════════════════════════════════════════════════════════════════════
 GameState updateDrawBattle(Vector2 mouse,float dt){
@@ -593,6 +712,7 @@ GameState updateDrawBattleResult(Vector2 mouse){
             if(g_lastResult.playerWon) g_campaign.battlesWon++;
             else g_campaign.battlesLost++;
         }
+        netMarkDirty(); // Fase H: batalla resuelta (captura de provincia + loot)
     }
 
     // Fase J: el rey ha caído
@@ -736,6 +856,7 @@ GameState updateDrawPreBattle(Vector2 mouse){
         std::vector<std::pair<int,int>> playerGroups=predP;
         std::vector<std::pair<int,int>> enemyGroups=g_preBattle.enemyUnits;
         autoResolveBattle(playerGroups,enemyGroups,terP,piP,g_preBattle.isDefense,defP);
+        netMarkDirty(); // Fase H: batalla auto-resuelta en el host
         return STATE_BATTLE_RESULT;
     }
     if(drawButton({(float)(SCREEN_W-450),(float)(bY+6),240,46},"START BATTLE",mouse,cn,ch)&&canStart){
@@ -783,6 +904,7 @@ GameState updateDrawPreBattle(Vector2 mouse){
             int sel=g_campaign.selectedArmy;
             selectArmy(sel>=0&&sel<(int)g_campaign.armies.size()?sel:-1);
         }
+        netMarkDirty(); // Fase H: retirada resuelta (puede perder provincia)
         return STATE_CAMPAIGN_MAP;
     }
     return STATE_PRE_BATTLE;
@@ -816,6 +938,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             } else {
                 g_campaign.playerProvince = to;
             }
+            netMarkDirty(); // Fase H: retransmitir nuevo estado
             if(!g_campaign.provinces[to].army.empty()){
                 // Guarnición hostil en provincia propia (legado)
                 g_preBattle.provinceIdx=to;
@@ -1058,12 +1181,19 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
                     if(p.owner==FACTION_PLAYER){
                         // Fase J: mover el ejército seleccionado (si aún puede)
                         if(armyCanAct){
-                            g_campaign.armyMoveFrom=g_campaign.playerProvince;
-                            g_campaign.armyMoveTo=i;
-                            g_campaign.armyMoveIdx=selArmy;
-                            g_campaign.armyMoveT=0.f;
+                            if(netIsClient()){
+                                // Fase H: el cliente envía el movimiento al host
+                                NetCmd mc; mc.cmd=NET_CMD_MOVE_ARMY;
+                                mc.a=g_campaign.playerProvince; mc.b=i; mc.c=selArmy;
+                                netSessionSendCmd(mc);
+                            } else {
+                                g_campaign.armyMoveFrom=g_campaign.playerProvince;
+                                g_campaign.armyMoveTo=i;
+                                g_campaign.armyMoveIdx=selArmy;
+                                g_campaign.armyMoveT=0.f;
+                            }
                         }
-                    } else if(armyCanAct&&!factionIsPlayerSide(p.owner)){
+                    } else if(armyCanAct&&!factionIsPlayerSide(p.owner)&&netCanEdit()){
                         // Fase I: no se puede atacar a un aliado militar
                         std::vector<std::pair<int,int>> eu=p.army;
                         for(auto& fa:g_campaign.armies)
@@ -1142,7 +1272,13 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
 
     float btnY=botBarY+(botBarH-uiPx(34.f))*0.5f;
     if(!armyMoving&&drawSmBtn({uiPx(10.f),btnY,uiPx(140.f),uiPx(34.f)},"END TURN",mouse,{20,50,20,255},{40,90,38,255})){
+        if(netIsClient()){
+            // Fase H: el cliente pide pasar turno; el host ejecuta processTurn
+            NetCmd ec; ec.cmd=NET_CMD_END_TURN; ec.a=ec.b=ec.c=0;
+            netSessionSendCmd(ec);
+        }else{
         bool pending=processTurn(); // Fase J: true = la IA ataca => pre-battle
+        netMarkDirty(); // Fase H: retransmitir a los clientes
         // Check victory/defeat after processing
         int totalProv=(int)g_campaign.provinces.size();
         int playerProv=0;
@@ -1154,6 +1290,7 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
             return STATE_DEFEAT;
         }
         if(pending) return STATE_PRE_BATTLE;
+        }
     }
     float bw=uiPx(120.f), bw2=uiPx(140.f), bh=uiPx(34.f);
     float bx=uiPx(10.f)+uiPx(140.f)+uiPx(10.f);
@@ -1172,7 +1309,14 @@ GameState updateDrawCampaignMap(Vector2 mouse,float dt){
         if(drawSmBtn({bx,btnY,bw,bh},"DISBAND",mouse,
                      haveSel?Color{50,25,25,255}:Color{25,25,25,255},
                      haveSel?Color{80,40,40,255}:Color{25,25,25,255})&&haveSel){
-            disbandArmy(g_campaign.selectedArmy);
+            if(netIsClient()){
+                // Fase H: el cliente pide disolver; el host lo aplica
+                NetCmd dc; dc.cmd=NET_CMD_DISBAND; dc.a=g_campaign.selectedArmy; dc.b=dc.c=0;
+                netSessionSendCmd(dc);
+            }else{
+                disbandArmy(g_campaign.selectedArmy);
+                netMarkDirty();
+            }
         }
     }
     if(drawSmBtn({(float)(SCREEN_W-uiPx(130.f)),btnY,bw,bh},"MENU",mouse,
@@ -1279,13 +1423,14 @@ GameState updateDrawCityManagement(Vector2 mouse){
             Rectangle buildBtn={bx+4,by+bh-26,bw-8,22};
             if(drawSmBtn(buildBtn,"BUILD",mouse,
                          canAfford?Color{20,50,20,255}:Color{30,20,20,255},
-                         canAfford?Color{40,90,38,255}:Color{30,20,20,255})&&canAfford){
+                         canAfford?Color{40,90,38,255}:Color{30,20,20,255})&&canAfford&&netCanEdit()){
                 res.gold-=bldGoldCost[b];
                 res.wood-=bldWoodCost[b];
                 res.stone-=bldStoneCost[b];
                 res.iron-=bldIronCost[b];
                 city.constructing=b;
                 city.constructTurns=bldTurns[b];
+                netMarkDirty(); // Fase H
             }
         }
         if(!prereqOk&&!built&&hover){
@@ -1316,14 +1461,16 @@ GameState updateDrawCityManagement(Vector2 mouse){
         int armyHere=armyIndexAt(g_campaign.viewedCity,FACTION_PLAYER);
         if(resHeroes>0){
             if(drawSmBtn({(float)(SCREEN_W-530),(float)(SCREEN_H-38),120,30},"FORM ARMY",mouse,
-                         Color{20,50,20,255},Color{40,90,38,255})){
+                         Color{20,50,20,255},Color{40,90,38,255})&&netCanEdit()){
                 formArmyAt(g_campaign.viewedCity);
+                netMarkDirty();
             }
         }
         if(armyHere>=0&&resNonHero>0){
             if(drawSmBtn({(float)(SCREEN_W-400),(float)(SCREEN_H-38),120,30},"JOIN ARMY",mouse,
-                         Color{20,50,20,255},Color{40,90,38,255})){
+                         Color{20,50,20,255},Color{40,90,38,255})&&netCanEdit()){
                 joinArmyAt(g_campaign.viewedCity);
+                netMarkDirty();
             }
         }
     }
@@ -1393,8 +1540,16 @@ GameState updateDrawRecruitment(Vector2 mouse){
             if(drawSmBtn(addBtn,"RECRUIT",mouse,
                          canAfford?Color{20,50,20,255}:Color{30,20,20,255},
                          canAfford?Color{40,90,38,255}:Color{30,20,20,255})&&canAfford){
-                res.gold-=td.recruitGold; res.food-=td.recruitFood; res.iron-=td.recruitIron;
-                g_campaign.recruitQueue.push_back({t,td.recruitTurns,td.recruitTurns});
+                if(netIsClient()){
+                    // Fase H: el cliente pide reclutar; el host valida y descuenta
+                    NetCmd rc; rc.cmd=NET_CMD_RECRUIT;
+                    rc.a=g_campaign.viewedCity; rc.b=t; rc.c=0;
+                    netSessionSendCmd(rc);
+                }else{
+                    res.gold-=td.recruitGold; res.food-=td.recruitFood; res.iron-=td.recruitIron;
+                    g_campaign.recruitQueue.push_back({t,td.recruitTurns,td.recruitTurns});
+                    netMarkDirty();
+                }
             }
         } else {
             // Show requirements
@@ -2236,11 +2391,12 @@ GameState updateDrawMarketplace(Vector2 mouse){
     if(drawButton({cx,cy,180,44},
                   TextFormat("BUY %d (%.0f g)",g_tradeAmount,buyPrice),
                   mouse,buyCol,buyColH)){
-        if(canBuy){
+        if(canBuy&&netCanEdit()){ // Fase H: el cliente no muta recursos localmente
             res.gold-=buyPrice;
             *resVal+=g_tradeAmount;
             battleLogAdd(TextFormat("[Market] Bought %d %s for %.0f gold",g_tradeAmount,resName,buyPrice));
             playSfx(SFX_COIN,0.9f);
+            netMarkDirty();
         } else playSfx(SFX_UI_ERROR,0.8f);
     }
 
@@ -2251,11 +2407,12 @@ GameState updateDrawMarketplace(Vector2 mouse){
     if(drawButton({cx+190,cy,180,44},
                   TextFormat("SELL %d (%.0f g)",g_tradeAmount,sellPrice),
                   mouse,sellCol,sellColH)){
-        if(canSell){
+        if(canSell&&netCanEdit()){ // Fase H: el cliente no muta recursos localmente
             *resVal-=g_tradeAmount;
             res.gold+=sellPrice;
             battleLogAdd(TextFormat("[Market] Sold %d %s for %.0f gold",g_tradeAmount,resName,sellPrice));
             playSfx(SFX_COIN,0.9f,0.95f);
+            netMarkDirty();
         } else playSfx(SFX_UI_ERROR,0.8f);
     }
 
@@ -2325,13 +2482,21 @@ GameState updateDrawDiplomacy(Vector2 mouse){
         // Botones: alianza militar / pacto comercial / trueque
         if(drawSmBtn({560,y0+22,150,36},g_campaign.allied[f]?"DISSOLVE MIL":"MIL ALLIANCE",
                      mouse,{55,45,20,255},{95,75,35,255})){
-            if(g_campaign.allied[f]) dissolveRelations(f,true);
-            else proposeMilitaryAlliance(f);
+            if(!netCanEdit()){ /* Fase H: cliente no negocia */ }
+            else{
+                if(g_campaign.allied[f]) dissolveRelations(f,true);
+                else proposeMilitaryAlliance(f);
+                netMarkDirty();
+            }
         }
         if(drawSmBtn({720,y0+22,150,36},g_campaign.tradePact[f]?"DISSOLVE PACT":"COMM PACT",
                      mouse,{25,45,65,255},{45,75,115,255})){
-            if(g_campaign.tradePact[f]) dissolveRelations(f,false);
-            else proposeCommercialPact(f);
+            if(!netCanEdit()){ /* Fase H: cliente no negocia */ }
+            else{
+                if(g_campaign.tradePact[f]) dissolveRelations(f,false);
+                else proposeCommercialPact(f);
+                netMarkDirty();
+            }
         }
         if(drawSmBtn({880,y0+22,150,36},"TRADE",mouse,
                      g_campaign.tradePact[f]?Color{30,55,35,255}:Color{25,25,25,255},
@@ -2392,8 +2557,11 @@ GameState updateDrawDiplomacy(Vector2 mouse){
                  gv,rv*factor[f],factor[f]),20,(int)py+186,13,C_SECONDARY);
 
         if(drawSmBtn({20,py+222,200,44},"OFFER DEAL",mouse,{30,70,35,255},{55,120,60,255})){
-            proposeTradeDeal(f,g_diploGiveRes,(float)g_diploGiveAmt,
-                             g_diploRecvRes,(float)g_diploRecvAmt);
+            if(netCanEdit()){ // Fase H: el cliente no negocia trueque
+                proposeTradeDeal(f,g_diploGiveRes,(float)g_diploGiveAmt,
+                                 g_diploRecvRes,(float)g_diploRecvAmt);
+                netMarkDirty();
+            } else playSfx(SFX_UI_ERROR,0.8f);
         }
         if(drawSmBtn({240,py+222,140,44},"CLOSE",mouse,{50,25,25,255},{80,40,40,255})){
             g_diploTradeFaction=-1;
@@ -2453,14 +2621,14 @@ GameState updateDrawMainMenu(Vector2 mouse){
     float bx=(float)SCREEN_W/2.f-bw/2.f;
     float step=uiPx(60.f);
     DrawText("New campaign:",(int)(bx),(int)(menuTop-uiPx(20.f)),14,{120,110,70,255});
-    if(drawButton({bx,menuTop,bw,bh},CAMPAIGN_NAMES[0],mouse)) { newCampaign(0); return STATE_CAMPAIGN_MAP; }
-    if(drawButton({bx,menuTop+step,bw,bh},CAMPAIGN_NAMES[1],mouse)) { newCampaign(1); return STATE_CAMPAIGN_MAP; }
-    if(drawButton({bx,menuTop+step*2.f,bw,bh},CAMPAIGN_NAMES[2],mouse)) { newCampaign(2); return STATE_CAMPAIGN_MAP; }
-    if(drawButton({bx,menuTop+step*3.f,bw,bh},CAMPAIGN_NAMES[3],mouse)) { newCampaign(3); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop,bw,bh},CAMPAIGN_NAMES[0],mouse)) { newCampaign(0); netMarkDirty(); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step,bw,bh},CAMPAIGN_NAMES[1],mouse)) { newCampaign(1); netMarkDirty(); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step*2.f,bw,bh},CAMPAIGN_NAMES[2],mouse)) { newCampaign(2); netMarkDirty(); return STATE_CAMPAIGN_MAP; }
+    if(drawButton({bx,menuTop+step*3.f,bw,bh},CAMPAIGN_NAMES[3],mouse)) { newCampaign(3); netMarkDirty(); return STATE_CAMPAIGN_MAP; }
     if(drawButton({bx,menuTop+step*4.f,bw,bh},"CONTINUE",mouse,
                   g_hasSave?Color{40,55,40,255}:Color{30,30,30,255},
                   g_hasSave?Color{70,110,60,255}:Color{30,30,30,255})&&g_hasSave){
-        if(loadGame()) return STATE_CAMPAIGN_MAP;
+        if(loadGame()){ netMarkDirty(); return STATE_CAMPAIGN_MAP; }
     }
     if(drawButton({bx,menuTop+step*5.f,bw,bh},"QUICK BATTLE",mouse)){
         g_quickSetup.playerCounts.assign(unitTypeCount(),0);
@@ -2523,6 +2691,7 @@ GameState updateDrawVictory(Vector2 mouse){
 
     if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"NEW CAMPAIGN",mouse,{30,65,30,255},{55,110,50,255})){
         newCampaign(g_campaign.campaignId);
+        netMarkDirty(); // Fase H: nueva campaña -> retransmitir estado inicial
         return STATE_CAMPAIGN_MAP;
     }
     if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
@@ -2555,6 +2724,7 @@ GameState updateDrawDefeat(Vector2 mouse){
 
     if(drawButton({(float)(SCREEN_W/2-180),(float)sy,360,54},"TRY AGAIN",mouse,{55,20,20,255},{90,35,35,255})){
         newCampaign(g_campaign.campaignId);
+        netMarkDirty(); // Fase H: nueva campaña -> retransmitir estado inicial
         return STATE_CAMPAIGN_MAP;
     }
     if(drawButton({(float)(SCREEN_W/2-180),(float)(sy+64),360,50},"MAIN MENU",mouse,{50,25,25,255},{80,40,40,255}))
@@ -2566,7 +2736,7 @@ GameState updateDrawDefeat(Vector2 mouse){
 //  FASE G — MULTIPLAYER LOBBY (host/join; sin sincronización de juego aun)
 // ═══════════════════════════════════════════════════════════════════════════
 GameState updateDrawMultiplayer(Vector2 mouse){
-    netSessionPoll();
+    // Fase H: el poll lo hace netSyncPump() en el main loop (una vez/frame)
 
     ClearBackground(C_BG);
     DrawRectangleGradientV(0,0,SCREEN_W,SCREEN_H,{10,8,6,255},C_BG);
@@ -2647,12 +2817,18 @@ GameState updateDrawMultiplayer(Vector2 mouse){
 
     // Hint
     const char* hint="Host listens on UDP port 7777. Join needs the host IP.";
+    if(g_netSession.role==NET_ROLE_HOST)
+        hint="Hosting. Start or continue a campaign; clients follow your state.";
+    else if(g_netSession.role==NET_ROLE_CLIENT&&g_netSession.connected)
+        hint="Connected. The host plays the campaign; you follow via snapshots.";
     int hw=MeasureText(hint,12);
     DrawText(hint,SCREEN_W/2-hw/2,(int)cy,12,C_SECONDARY);
 
     // BACK (abajo a la derecha, como Diplomacia)
+    // Fase H: el cliente cierra su sesión; el HOST la conserva (sigue
+    // escuchando para que los clientes entren a la campana co-op).
     if(drawButton({(float)(SCREEN_W-160),(float)(SCREEN_H-44),140,36},"BACK",mouse)){
-        netSessionStop();
+        if(g_netSession.role!=NET_ROLE_HOST) netSessionStop();
         return STATE_MAIN_MENU;
     }
     return STATE_MULTIPLAYER;
@@ -2662,14 +2838,15 @@ GameState updateDrawMultiplayer(Vector2 mouse){
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 int main(int argc, char** argv){
-    // Fase E/F/G: -nettest ejecuta los self-tests de red (headless) y sale
-    // con 0/1 (capa cruda + sesión + runtime de lobby)
+    // Fase E/F/G/H: -nettest ejecuta los self-tests de red (headless) y sale
+    // con 0/1 (capa cruda + sesión + lobby + sincronización de campaña)
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"-nettest")==0){
             int rc=runNetTest();
             int rc2=runSessionTest();
             int rc3=runLobbyTest();
-            return (rc==0&&rc2==0&&rc3==0)?0:1;
+            int rc4=runSyncTest(); // Fase H
+            return (rc==0&&rc2==0&&rc3==0&&rc4==0)?0:1;
         }
     }
     // Load persistent settings before creating the window (so resolution applies on startup)
@@ -2722,6 +2899,7 @@ int main(int argc, char** argv){
 
         Vector2 mouse=GetMousePosition();
         updateAudio(dt);
+        netSyncPump(); // Fase H: drena comandos + retransmite snapshot (1×/frame)
 
         profFrameBegin();
         double tFrame=GetTime();
