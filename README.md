@@ -77,12 +77,14 @@ procedurales originales (fallback automático).
     PRE_BATTLE y resuelve la batalla; el resultado se retransmite vía
     snapshot.
   - **Limitaciones**: co-op reino compartido (sin dos reinos); defensas IA
-    las resuelve el host; cliente sin checks victoria/derrota locales;
-    acciones no sincronizadas se sobreescriben con el siguiente snapshot;
-    1 `NetSession`/proceso; UDP asumido sin pérdida. **`missPong`**: el
-    cliente detecta el cierre del host sin `BYE` tras ~10 s sin PONG y
-    muestra "Host lost". **`INADDR_ANY`**: el host se liga a todas las
-    interfaces (juego en red real LAN/WAN, no solo loopback).
+    las resuelve el host; acciones no sincronizadas se sobreescriben con el
+    siguiente snapshot; 1 `NetSession`/proceso; UDP asumido sin pérdida.
+    **`missPong`**: el cliente detecta el cierre del host sin `BYE` tras
+    ~10 s sin PONG y muestra "Host lost". **`INADDR_ANY`**: el host se liga
+    a todas las interfaces (juego en red real LAN/WAN, no solo loopback).
+    **Victoria/derrota del cliente**: al aplicar un snapshot, el cliente
+    entra en `STATE_VICTORY` (≥80%) o `STATE_DEFEAT` (0), mismo umbral
+    que el host.
 - Roadmap: F protocolo de sesión ✅ → G lobby ✅ → H sincronización ✅
   (incluye H2 ataques). Detalle en `PLAN.md` §12.
 

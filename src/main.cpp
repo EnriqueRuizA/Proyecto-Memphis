@@ -207,6 +207,12 @@ static void netSyncPump(){
                 if(applyCampaignSnapshot(g_netSession.snapBuf,g_netSession.snapSize)){
                     netSessionConsumeSnapshot();
                     if(st==STATE_MULTIPLAYER||st==STATE_MAIN_MENU) g_state=STATE_CAMPAIGN_MAP;
+                    // Cliente: check victoria/derrota local (mismo umbral que host)
+                    int totalProv=(int)g_campaign.provinces.size();
+                    int playerProv=0;
+                    for(auto& p:g_campaign.provinces) if(p.owner==FACTION_PLAYER) playerProv++;
+                    if(playerProv>=(int)(totalProv*0.8f)) g_state=STATE_VICTORY;
+                    else if(playerProv==0) g_state=STATE_DEFEAT;
                 } else netSessionConsumeSnapshot();
             }
         }
