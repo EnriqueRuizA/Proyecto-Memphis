@@ -1082,3 +1082,99 @@ git commit -m "Saneamiento: fuera binarios y settings local, .gitignore unificad
 y, tras ella, FASE 4 (`ARCHITECTURE.md`, build system, CI). El saneamiento de Git
 (FASE 0) y la reestructuración (FASE 1–2) están **staged sin commit**, a la espera
 de confirmación.
+
+> **Actualización (2026-10-10):** FASES 0–2 commitadas y cerradas; tras ellas se
+> ejecutaron las fases de contenido y red descritas en **§12** (ya ejecutadas).
+> La FASE 3/4 original (v8.2–v8.4, ARCHITECTURE.md, CI) sigue pendiente.
+
+---
+
+## 12. FASES POSTERIORES (contenido, campañas y red) — 2026-10-08 → 2026-10-10
+
+Tras la reestructuración modular se ejecutó un plan de fases de contenido y
+tecnología, **una fase = un commit**, en este orden:
+
+| Fase | Commit | Contenido |
+|---|---|---|
+| Realismo de combate | `5b28375` | Separación sólida sin peonzas, formación configurable |
+| Fase 0–5 (finales) | `17d002f`…`17d002f` | Build unificado (B), rendimiento 9.2→60 FPS + profiler (A), unidades isométricas animadas (2), audio CC0 (3), VFX de combate (4), atmósfera (5) |
+| Fase A | `67023e3` | Rendimiento de combate 9.2 → 60 FPS + profiler (`src/prof`) |
+| Fase B | `2eb2186` | Build unificado a `rts_game.exe` en la raíz (`build.bat`) |
+| Fase C | `7da77d7` | Mapa de campaña tipo Risk (continente con fronteras Voronoi, `src/mapart`) |
+| Fase D | `7f4ac27` | Auto-resolve con predicción de victoria (estilo RISK) |
+| Fase D+ | `4723442` | Bordes irregulares y colores de bando en el mapa de campaña |
+| Fase J | `231212e` | Ejércitos de campo (badges, selección, formación/unión, IA móvil) + fix ranged hold |
+| Fase I | `ab1ba8e` | Diplomacia: alianzas militares, pactos comerciales, trueque, modos de mapa |
+| Fase K | `6afe190` | Campaña «Great Continent» (32 provincias), 4ª facción Sable Fleet, diplomacia de 4 filas, `SAVE_VERSION` 8 |
+| **Fase E** | `6ab20c8` | **Base de red UDP** (ver §12.1) |
+| Fase F | (§12.2) | Protocolo de sesión (handshake) — en ejecución |
+
+### 12.1 Fase E — base de red UDP (ejecutada, `6ab20c8`)
+
+- `src/net.h` / `src/net.cpp` (nuevos): sockets UDP **no bloqueantes** con
+  Winsock2 (incluido el PRIMERO en `net.cpp`, antes de raylib/windows.h, para
+  evitar el conflicto clásico de cabeceras; `net.h` no expone tipos Winsock,
+  usa `NetSock = uintptr_t`).
+- `netInit` / `netShutdown` (WSAStartup/WSACleanup idempotentes),
+  `netOpen(bindPort,&outPort)` (bind a **127.0.0.1** — evita avisos de firewall;
+  F/G/H ampliarán a `INADDR_ANY` cuando haya protocolo de juego),
+  `netSendTo` / `netRecvFrom` (con `select()` y timeout).
+- `runNetTest()`: self-test headless **10 rondas ping/pong** entre dos sockets
+  en `127.0.0.1:7777` (servidor + cliente efímero); imprime `NETTEST PASS/FAIL`
+  y sale con código 0/1.
+- `main(int argc, char** argv)`: el flag **`-nettest`** ejecuta el self-test
+  ANTES de `InitWindow` (sin ventana) y sale.
+- `build.bat`: añadido **`-lws2_32`**.
+- Verificado: `rts_game.exe -nettest` → PASS (10/10), exit 0. `build/test_net.ps1`.
+
+### 12.2 Fase F — protocolo de sesión (handshake)
+
+Sobre la base UDP de la Fase E, define el **mensaje de sesión** y el handshake
+mínimo entre host y cliente:
+
+- `NetMsg` (packed): `magic` ('MCNT'), `type` (JOIN/WELCOME/REJECT/PING/PONG/BYE),
+  `version` (`NET_PROTO_VERSION=1`), `seq`, payload de 64 bytes.
+- `netSendMsg` / `netRecvMsg` (valida magic+version; devuelve 1 OK, 0 timeout,
+  -1 inválido).
+- Handshake: cliente JOIN → host WELCOME (o REJECT si versión incompatible);
+  keepalive PING/PONG con `seq` estricto; cierre BYE.
+- `-nettest` ampliado: además del ping/pong crudo, **session test** loopback
+  (JOIN→WELCOME, 3×PING/PONG, BYE) → `SESSION PASS/FAIL`; exit 0 solo si ambas
+  fases pasan. `build/test_net.ps1` verifica ambas.
+
+### 12.3 Fase G — lobby en el juego (planificada)
+
+- Botón **MULTIPLAYER** en el menú principal → pantalla de lobby:
+  HOST (escucha en 7777) / JOIN (IP: puerto), estado de conexión, lista de
+  jugadores, chat de estado, BACK.
+- Sin gameplay en red todavía: el lobby solo establece y muestra la sesión.
+
+### 12.4 Fase H — sincronización de campaña (planificada)
+
+- Modelo **host autoritativo**: el host procesa el turno y envía eventos de
+  dominio (movimiento de ejército, reclutamiento, batalla auto-resolve,
+  resultado de batalla real) a los clientes.
+- Clientes aplican eventos sobre una copia local de `CampaignState`; divergencias
+  se resuelven re-sincronizando el estado completo del turno.
+- Límite inicial: 2 jugadores, misma campaña (por ejemplo, aliados o bandos
+  enfrentados según la diplomacia existente).
+
+### 12.5 Infraestructura de tests (build/, ignorada en Git)
+
+Tests PowerShell **ASCII puro** (bytes > 127 = error de sintaxis en PS 5.1),
+coordenadas a pantalla (1600×900, uiScale 1.000), con helpers endurecidos tras
+incidencias reales:
+
+- `FocusWin`: `ShowWindow(9)` (SW_RESTORE) + `SetForegroundWindow` + fallback
+  `keybd_event(ALT)` verificando `GetForegroundWindow`; llamada al inicio de
+  `Click`/`GetBmp` y al arrancar. Motivo: el navegador del usuario robaba
+  foco (clicks caían en otra app) y tras `Kill()` forzados la ventana quedaba
+  **blanca** (superficie DWM colgada) aunque el proceso renderizaba.
+- `settings.ini` debe mantener **uiScale 1.000**: los tests muestrean píxeles
+  a escala 1.0 (1.212 rompía todos los umbrales).
+- Suite actual (todas ALL PASS tras la Fase E): `test_net` (3), `test_faseK` (12),
+  `test_faseI` (25), `test_faseJ` (24), `test_faseD` (19), `test_ranged` (7),
+  `test_vfx` (visual). `test_battle.ps1` es legacy (usa `rts_game_mod.exe`
+  inexistente): fuera de la suite.
+- La suite dura ~2,5 min; si se usa el equipo durante la ejecución pueden
+  perderse checks sensibles al foco (interferencia, no regresión).

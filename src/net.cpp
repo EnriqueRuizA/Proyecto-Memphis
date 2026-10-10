@@ -130,6 +130,139 @@ int netRecvFrom(NetSock s, void* buf, int maxLen, int timeoutMs){
     return n;
 }
 
+// ── Fase F: protocolo de sesión ─────────────────────────────────────────────
+
+bool netSendMsg(NetSock s, const char* ip, unsigned short port,
+                const NetMsg& m){
+    NetMsg out=m;
+    out.magic=NET_MAGIC;
+    out.version=(unsigned char)NET_PROTO_VERSION;
+    return netSendTo(s,ip,port,&out,(int)sizeof out)==(int)sizeof out;
+}
+
+int netRecvMsg(NetSock s, NetMsg* out, int timeoutMs){
+    if(!out) return -1;
+    int n=netRecvFrom(s,out,(int)sizeof *out,timeoutMs);
+    if(n==0) return 0;
+    if(n!=(int)sizeof *out) return -1;          // datagrama truncado/tamaño raro
+    if(out->magic!=NET_MAGIC) return -1;        // no es nuestro protocolo
+    if(out->version!=NET_PROTO_VERSION) return -1; // build incompatible (alto nivel: REJECT)
+    return 1;
+}
+
+int runSessionTest(){
+    printf("SESSION: handshake loopback 127.0.0.1:%d v%d\n",
+           NET_PORT,(int)NET_PROTO_VERSION);
+    if(!netInit()){
+        printf("SESSION FAIL - netInit\n");
+        return 1;
+    }
+    unsigned short hostPort=0, cliPort=0;
+    NetSock host=netOpen(NET_PORT,&hostPort);
+    if(host==NET_INVALID){
+        printf("SESSION FAIL - bind host :%d\n",NET_PORT);
+        netShutdown();
+        return 1;
+    }
+    NetSock cli=netOpen(0,&cliPort);
+    if(cli==NET_INVALID){
+        printf("SESSION FAIL - socket cliente\n");
+        netClose(host);
+        netShutdown();
+        return 1;
+    }
+
+    bool ok=true;
+    uint16_t cseq=0;   // secuencia del cliente
+    uint16_t hseq=0;   // secuencia del host
+
+    // 1) JOIN -> WELCOME
+    NetMsg m={};
+    m.type=NET_MSG_JOIN;
+    m.seq=++cseq;
+    snprintf(m.payload,sizeof m.payload,"join");
+    if(!netSendMsg(cli,"127.0.0.1",NET_PORT,m)){ printf("SESSION FAIL - send JOIN\n"); ok=false; goto done; }
+    {
+        NetMsg r={};
+        int rc=netRecvMsg(host,&r,500);
+        if(rc!=1||r.type!=NET_MSG_JOIN||r.seq!=cseq){
+            printf("SESSION FAIL - host recv JOIN (rc=%d type=%u seq=%u)\n",
+                   rc,(unsigned)r.type,(unsigned)r.seq);
+            ok=false; goto done;
+        }
+    }
+    m={};
+    m.type=NET_MSG_WELCOME;
+    m.seq=++hseq;
+    snprintf(m.payload,sizeof m.payload,"v%d",(int)NET_PROTO_VERSION);
+    if(!netSendMsg(host,"127.0.0.1",cliPort,m)){ printf("SESSION FAIL - send WELCOME\n"); ok=false; goto done; }
+    {
+        NetMsg r={};
+        int rc=netRecvMsg(cli,&r,500);
+        if(rc!=1||r.type!=NET_MSG_WELCOME||r.seq!=hseq){
+            printf("SESSION FAIL - cliente recv WELCOME (rc=%d type=%u)\n",rc,(unsigned)r.type);
+            ok=false; goto done;
+        }
+    }
+    printf("SESSION: JOIN -> WELCOME ok (cli:%u host:%u)\n",
+           (unsigned)cliPort,(unsigned)hostPort);
+
+    // 2) 3x PING/PONG con seq estricto
+    for(int i=0;i<3&&ok;i++){
+        m={};
+        m.type=NET_MSG_PING;
+        m.seq=++cseq;
+        snprintf(m.payload,sizeof m.payload,"ping%d",i);
+        if(!netSendMsg(cli,"127.0.0.1",NET_PORT,m)){ printf("SESSION FAIL - send PING %d\n",i); ok=false; break; }
+        NetMsg r={};
+        int rc=netRecvMsg(host,&r,500);
+        if(rc!=1||r.type!=NET_MSG_PING||r.seq!=cseq){
+            printf("SESSION FAIL - host recv PING %d (rc=%d seq=%u!=%u)\n",
+                   i,rc,(unsigned)r.seq,(unsigned)cseq);
+            ok=false; break;
+        }
+        m={};
+        m.type=NET_MSG_PONG;
+        m.seq=++hseq;
+        memcpy(m.payload,r.payload,sizeof m.payload);
+        if(!netSendMsg(host,"127.0.0.1",cliPort,m)){ printf("SESSION FAIL - send PONG %d\n",i); ok=false; break; }
+        rc=netRecvMsg(cli,&r,500);
+        if(rc!=1||r.type!=NET_MSG_PONG||r.seq!=hseq){
+            printf("SESSION FAIL - cliente recv PONG %d (rc=%d type=%u)\n",i,rc,(unsigned)r.type);
+            ok=false; break;
+        }
+        printf("SESSION: ping/pong %d ok (seq c=%u h=%u)\n",
+               i,(unsigned)cseq,(unsigned)hseq);
+    }
+    if(!ok) goto done;
+
+    // 3) BYE
+    m={};
+    m.type=NET_MSG_BYE;
+    m.seq=++cseq;
+    if(!netSendMsg(cli,"127.0.0.1",NET_PORT,m)){ printf("SESSION FAIL - send BYE\n"); ok=false; goto done; }
+    {
+        NetMsg r={};
+        int rc=netRecvMsg(host,&r,500);
+        if(rc!=1||r.type!=NET_MSG_BYE){
+            printf("SESSION FAIL - host recv BYE (rc=%d)\n",rc);
+            ok=false; goto done;
+        }
+    }
+    printf("SESSION: BYE ok\n");
+
+done:
+    netClose(cli);
+    netClose(host);
+    netShutdown();
+    if(ok){
+        printf("SESSION PASS\n");
+        return 0;
+    }
+    printf("SESSION FAIL\n");
+    return 1;
+}
+
 int runNetTest(){
     const int ROUNDS=10;
     printf("NETTEST: UDP loopback 127.0.0.1:7777\n");

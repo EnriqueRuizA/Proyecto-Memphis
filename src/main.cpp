@@ -2563,9 +2563,14 @@ GameState updateDrawDefeat(Vector2 mouse){
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 int main(int argc, char** argv){
-    // Fase E: -nettest ejecuta el self-test de red (headless) y sale con 0/1
+    // Fase E/F: -nettest ejecuta los self-tests de red (headless) y sale con 0/1
+    // (capa cruda ping/pong + sesión JOIN/WELCOME/PING/BYE de la Fase F)
     for(int i=1;i<argc;i++){
-        if(strcmp(argv[i],"-nettest")==0) return runNetTest();
+        if(strcmp(argv[i],"-nettest")==0){
+            int rc=runNetTest();
+            int rc2=runSessionTest();
+            return (rc==0&&rc2==0)?0:1;
+        }
     }
     // Load persistent settings before creating the window (so resolution applies on startup)
     loadSettings();                  // 3.1: load persistent settings
